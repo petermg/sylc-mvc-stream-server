@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SyLC MVC Stream</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">Self-hosted · trusted LAN or VPN</p>
+        <h1>SyLC MVC Stream</h1>
+        <p class="subtitle">On-demand MVC MKV and unencrypted Blu-ray 3D ISO → selectable 3D/anaglyph H.264 + AC-3 HLS</p>
+      </div>
+      <span id="healthBadge" class="badge">Checking…</span>
+    </header>
+
+    <section id="authPanel" class="panel compact hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Authentication</p><h2>Enter the server API token</h2></div>
+      </div>
+      <p class="notice">Playback controls and media settings are protected. The token remains in this browser only.</p>
+      <div class="inline-form">
+        <input id="authToken" type="password" autocomplete="current-password" placeholder="API token">
+        <button id="authButton" class="button primary" type="button">Connect</button>
+      </div>
+      <p id="authError" class="error hidden"></p>
+    </section>
+
+    <section id="setupPanel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">First-run setup</p><h2>Choose your first media library</h2></div>
+      </div>
+      <p class="notice">SyLC reads media directly from server folders and never modifies the source files. Supported files are <strong>.mkv</strong>, <strong>.mk3d</strong>, and unencrypted Blu-ray 3D <strong>.iso</strong>.</p>
+      <div class="form-grid">
+        <label class="option-field"><span>Library name</span><input id="setupName" type="text" value="3D Movies" maxlength="120"></label>
+        <label class="option-field wide"><span>Server folder</span><div class="path-field"><input id="setupPath" type="text" placeholder="/mnt/media/3d-movies"><button id="setupBrowse" class="button secondary" type="button">Browse</button></div></label>
+        <label class="check-field"><input id="setupRecursive" type="checkbox" checked><span><strong>Include subfolders</strong><small>Scan recursively without following directory symlinks.</small></span></label>
+        <label class="option-field"><span>Optional API token</span><input id="setupToken" type="password" autocomplete="new-password" placeholder="Blank = trusted LAN/VPN only"></label>
+      </div>
+      <div class="actions top-gap">
+        <button id="setupTest" class="button secondary" type="button">Test folder</button>
+        <button id="setupSave" class="button primary" type="button">Finish setup</button>
+      </div>
+      <p id="setupResult" class="notice"></p>
+      <p id="setupError" class="error hidden"></p>
+    </section>
+
+    <div id="appContent" class="hidden">
+      <section class="panel status-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Current session</p><h2 id="sessionTitle">Idle</h2></div>
+          <div class="actions">
+            <button id="openStream" class="button primary hidden" type="button">Copy player URL</button>
+            <button id="stopButton" class="button danger hidden" type="button">Stop</button>
+            <a id="reportButton" class="button secondary hidden" href="/api/sessions/current/report">Report</a>
+          </div>
+        </div>
+        <div id="statusGrid" class="metric-grid"></div>
+        <p id="playbackNotice" class="notice hidden"></p>
+        <p id="sessionError" class="error hidden"></p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Playback position</p><h2 id="selectedTitle">Select a title below</h2></div>
+          <span id="selectedDuration" class="duration-label">Duration unavailable</span>
+        </div>
+
+        <div class="seek-control">
+          <div class="playback-options">
+            <label class="option-field" for="outputMode">
+              <span>Output layout</span>
+              <select id="outputMode">
+                <option value="half-sbs">Half side-by-side</option>
+                <option value="full-sbs">Full side-by-side</option>
+                <option value="half-ou">Half over-under</option>
+                <option value="full-ou">Full over-under</option>
+                <option value="left-eye">Left eye only</option>
+                <option value="right-eye">Right eye only</option>
+                <option value="anaglyph-color">Anaglyph color (red/cyan)</option>
+                <option value="anaglyph-dubois">Anaglyph Dubois (red/cyan)</option>
+                <option value="passive-rows-left-top">Passive 4K rows — left eye on top/even row</option>
+                <option value="passive-rows-right-top">Passive 4K rows — right eye on top/even row</option>
+              </select>
+            </label>
+            <label class="option-field" for="audioStream">
+              <span>Audio track</span>
+              <select id="audioStream"><option value="0">Default audio track</option></select>
+            </label>
+            <label class="check-field" for="swapEyes">
+              <input id="swapEyes" type="checkbox">
+              <span><strong>Swap eyes</strong><small>Exchange left and right before composing the selected layout.</small></span>
+            </label>
+          </div>
+          <p class="mode-note">Full-SBS and full-OU preserve every source-eye pixel but require roughly twice the encoder work and bitrate. Anaglyph Color and Dubois produce ordinary 1920×1080 red/cyan video for glasses.</p>
+          <input id="positionSlider" type="range" min="0" max="0" step="1" value="0" disabled aria-label="Movie position">
+          <div class="position-row">
+            <label for="startInput">Position</label>
+            <input id="startInput" type="text" inputmode="numeric" value="00:00:00" placeholder="HH:MM:SS or seconds">
+            <strong id="positionLabel">0:00 / —</strong>
+          </div>
+          <div class="jump-grid" aria-label="Quick seek controls">
+            <button class="button secondary jump-button" data-delta="-300" type="button">−5 min</button>
+            <button class="button secondary jump-button" data-delta="-30" type="button">−30 sec</button>
+            <button class="button secondary jump-button" data-delta="30" type="button">+30 sec</button>
+            <button class="button secondary jump-button" data-delta="300" type="button">+5 min</button>
+          </div>
+          <div class="seek-actions">
+            <button id="playSelected" class="button primary" type="button" disabled>Play selected title</button>
+            <button id="seekButton" class="button seek" type="button" disabled>Apply mode / seek current session</button>
+          </div>
+          <p id="seekHelp" class="notice">Seeking or changing layout replaces the active conversion but keeps the previous HLS URL readable from disk.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Read-only movie library</p><h2>MVC MKV / MK3D and Blu-ray 3D ISO files</h2></div>
+          <button id="refreshButton" class="button secondary" type="button">Rescan</button>
+        </div>
+        <label class="search-label" for="searchInput">Filter files</label>
+        <input id="searchInput" type="search" placeholder="Type part of a filename, folder, or library">
+        <p id="mediaNotice" class="notice">Loading…</p>
+        <div id="mediaList" class="media-list"></div>
+      </section>
+
+      <section class="panel" id="librariesPanel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Server settings</p><h2>Media Libraries</h2></div>
+          <button id="addLibraryButton" class="button primary" type="button">Add library</button>
+        </div>
+        <p class="notice">Libraries are server folders. Removing one from SyLC never deletes, renames, or changes its files.</p>
+        <div id="libraryEditor" class="editor hidden">
+          <input id="libraryId" type="hidden">
+          <div class="form-grid">
+            <label class="option-field"><span>Library name</span><input id="libraryName" type="text" maxlength="120"></label>
+            <label class="option-field wide"><span>Server folder</span><div class="path-field"><input id="libraryPath" type="text" placeholder="/mnt/media/3d-movies"><button id="libraryBrowse" class="button secondary" type="button">Browse</button></div></label>
+            <label class="check-field"><input id="libraryRecursive" type="checkbox" checked><span><strong>Include subfolders</strong><small>Scan recursively.</small></span></label>
+            <label class="check-field"><input id="libraryEnabled" type="checkbox" checked><span><strong>Enabled</strong><small>Include this location in the catalog.</small></span></label>
+          </div>
+          <div class="actions top-gap">
+            <button id="libraryTest" class="button secondary" type="button">Test folder</button>
+            <button id="librarySave" class="button primary" type="button">Save library</button>
+            <button id="libraryCancel" class="button secondary" type="button">Cancel</button>
+          </div>
+          <p id="libraryTestResult" class="notice"></p>
+        </div>
+        <div id="librariesList" class="library-list"></div>
+      </section>
+
+      <section class="panel compact">
+        <div class="panel-heading"><div><p class="eyebrow">Security</p><h2>API token</h2></div></div>
+        <p id="tokenStatus" class="notice"></p>
+        <div class="inline-form">
+          <input id="newToken" type="password" autocomplete="new-password" placeholder="New token; blank disables authentication">
+          <button id="saveToken" class="button secondary" type="button">Update token</button>
+        </div>
+        <p class="mode-note">Keep SyLC on a trusted LAN or VPN. Do not expose port 8097 directly to the public Internet.</p>
+      </section>
+
+      <footer>
+        <button id="cleanupButton" class="text-button" type="button">Clean stale sessions now</button>
+        <span>SyLC MVC Stream 0.7 public alpha · unencrypted user-supplied media only</span>
+      </footer>
+    </div>
+  </main>
+
+  <dialog id="folderDialog">
+    <form method="dialog" class="dialog-card">
+      <div class="panel-heading"><div><p class="eyebrow">Server folders</p><h2>Select a directory</h2></div><button class="button secondary" value="cancel">Close</button></div>
+      <p id="folderCurrent" class="notice">Choose a root</p>
+      <div class="actions"><button id="folderUp" class="button secondary hidden" type="button">Up</button><button id="folderChoose" class="button primary hidden" type="button">Use this folder</button></div>
+      <div id="folderList" class="folder-list"></div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

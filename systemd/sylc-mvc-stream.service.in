@@ -1,0 +1,38 @@
+[Unit]
+Description=SyLC MVC Stream Server
+Documentation=file:@DEST@/README.md
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+@SUPPLEMENTARY_GROUPS@
+WorkingDirectory=@DEST@/app
+EnvironmentFile=@ENV_FILE@
+ExecStart=/usr/bin/python3 @DEST@/app/server.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=@DEST@/app @DEST@/engine
+ReadWritePaths=@DEST@/state @CONFIG_DIR@
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+SyLC MVC Stream Service
+Copyright (C) 2026 SyLC contributors
+
+This project is distributed under the GNU General Public License version 3.
+See LICENSE.
+
+The bundled edge264 source is distributed under the BSD 3-Clause License.
+See engine/phase6-streaming/src/edge264/LICENSE_BSD.txt.
+
+The bundled VideoLAN libudfread 1.2.0 source is distributed under the GNU
+Lesser General Public License version 2.1 or later.
+See engine/phase6-streaming/src/videolan/libudfread-1.2.0/COPYING.
+
+The service dynamically uses a system-installed libbluray library when
+available. libbluray is not redistributed in this package.
+
+FFmpeg and ffprobe are invoked as system-installed executables and are not
+redistributed in this source package.
+
+No proprietary 4XVR code, binary, resource, or decompiled implementation is
+included.

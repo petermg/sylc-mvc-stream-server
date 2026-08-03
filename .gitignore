@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+build/
+.gradle/
+.idea/
+*.log
+*.tmp
+.DS_Store

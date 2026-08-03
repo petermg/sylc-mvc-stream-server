@@ -1,0 +1,20 @@
+SyLC MVC Stream Server 0.7.0-alpha.2
+
+1. Install prerequisites on Ubuntu/Debian:
+
+sudo apt update
+sudo apt install -y ffmpeg cmake ninja-build build-essential curl libbluray2 unzip
+
+2. Extract the release and install:
+
+unzip SyLC-MVC-Stream-Server-0.7.0-alpha.2-source.zip
+cd sylc-mvc-stream-server-0.7.0-alpha.2
+chmod +x scripts/install.sh scripts/uninstall.sh engine/run-phase6-streaming-session.sh
+sudo ./scripts/install.sh
+
+3. Open http://SERVER-IP:8097 and complete the Media Libraries setup.
+
+4. Verify:
+
+sudo systemctl status sylc-mvc-stream --no-pager --full
+curl -fsS http://127.0.0.1:8097/api/health | python3 -m json.tool
