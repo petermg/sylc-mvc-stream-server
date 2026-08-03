@@ -2,6 +2,8 @@
 
 **Public alpha:** `0.7.0-alpha.2`
 
+You can find the player for this server here: https://github.com/petermg/sylc-stream-player-android
+
 SyLC MVC Stream Server converts user-supplied MVC 3D video into ordinary H.264 + AC-3 HLS that can be played by inexpensive Android TV and Fire TV devices, VLC, PotPlayer, and other compatible clients.
 
 It supports:
