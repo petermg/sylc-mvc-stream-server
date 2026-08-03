@@ -14,6 +14,12 @@ struct AudioStream {
     std::string language;
 };
 
+struct SubtitleStream {
+    std::uint16_t pid = 0;
+    std::uint8_t coding_type = 0;
+    std::string language;
+};
+
 struct Segment {
     std::string clip;
     std::uint64_t start_time90k = 0;
@@ -21,6 +27,7 @@ struct Segment {
     std::uint64_t out_time90k = 0;
     std::uint16_t base_video_pid = 0;
     std::vector<AudioStream> primary_audio;
+    std::vector<SubtitleStream> presentation_graphics;
 };
 
 struct Selection {

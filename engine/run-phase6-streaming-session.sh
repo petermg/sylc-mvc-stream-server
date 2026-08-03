@@ -17,6 +17,11 @@ REPORT=${SYLC_REPORT:-$SESSION_DIR/diagnostic-report.txt}
 THREADS=${SYLC_THREADS:-0}
 SWAP_EYES=${SYLC_SWAP_EYES:-0}
 AUDIO_STREAM=${SYLC_AUDIO_STREAM:-0}
+SUBTITLE_ID=${SYLC_SUBTITLE_ID:-off}
+SUBTITLE_KIND=${SYLC_SUBTITLE_KIND:-none}
+SUBTITLE_STREAM=${SYLC_SUBTITLE_STREAM:--1}
+SUBTITLE_PATH=${SYLC_SUBTITLE_PATH:-}
+SUBTITLE_FORMAT=${SYLC_SUBTITLE_FORMAT:-}
 ENCODER_MODE=${SYLC_ENCODER_MODE:-vaapi}
 VAAPI_DEVICE=${SYLC_VAAPI_DEVICE:-/dev/dri/renderD128}
 OUTPUT_MODE=${SYLC_OUTPUT_MODE:-half-sbs}
@@ -29,9 +34,12 @@ ISO_PROBE_LOG=$WORK_ROOT/iso-probe.log
 ISO_PLAN_LOG=$WORK_ROOT/iso-seek-plan.log
 ISO_VIDEO_LOG=$WORK_ROOT/iso-video.log
 ISO_AUDIO_LOG=$WORK_ROOT/iso-audio.log
+ISO_SUBTITLE_LOG=$WORK_ROOT/iso-subtitle.log
 ISO_PROBE_JSON=$WORK_ROOT/iso-probe.json
 ISO_PLAN_JSON=$WORK_ROOT/iso-seek-plan.json
 ISO_AUDIO_FIFO=$WORK_ROOT/iso-audio.pipe
+ISO_SUBTITLE_FIFO=$WORK_ROOT/iso-subtitle.sup.pipe
+SUBTITLE_FILTER_SCRIPT=$WORK_ROOT/subtitle-filter.ffscript
 PLAYLIST=$HLS_DIR/stream.m3u8
 
 if [[ ${SYLC_PHASE6_STREAM_INNER:-0} != 1 ]]; then
@@ -55,6 +63,7 @@ fail() {
 }
 
 ISO_AUDIO_PID=
+ISO_SUBTITLE_PID=
 cleanup_runtime() {
   local status=$?
   trap - EXIT
@@ -62,13 +71,17 @@ cleanup_runtime() {
     kill "$ISO_AUDIO_PID" 2>/dev/null || true
     wait "$ISO_AUDIO_PID" 2>/dev/null || true
   fi
-  rm -f "$ISO_AUDIO_FIFO"
+  if [[ -n "${ISO_SUBTITLE_PID:-}" ]] && kill -0 "$ISO_SUBTITLE_PID" 2>/dev/null; then
+    kill "$ISO_SUBTITLE_PID" 2>/dev/null || true
+    wait "$ISO_SUBTITLE_PID" 2>/dev/null || true
+  fi
+  rm -f "$ISO_AUDIO_FIFO" "$ISO_SUBTITLE_FIFO"
   exit "$status"
 }
 trap cleanup_runtime EXIT
 
 mkdir -p "$WORK_ROOT" "$HLS_DIR"
-rm -f "$DEMUX_LOG" "$PRODUCER_LOG" "$FFMPEG_LOG" "$ISO_PROBE_LOG" "$ISO_PLAN_LOG" "$ISO_VIDEO_LOG" "$ISO_AUDIO_LOG" "$ISO_PROBE_JSON" "$ISO_PLAN_JSON" "$ISO_AUDIO_FIFO"
+rm -f "$DEMUX_LOG" "$PRODUCER_LOG" "$FFMPEG_LOG" "$ISO_PROBE_LOG" "$ISO_PLAN_LOG" "$ISO_VIDEO_LOG" "$ISO_AUDIO_LOG" "$ISO_SUBTITLE_LOG" "$ISO_PROBE_JSON" "$ISO_PLAN_JSON" "$ISO_AUDIO_FIFO" "$ISO_SUBTITLE_FIFO" "$SUBTITLE_FILTER_SCRIPT"
 find "$HLS_DIR" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.m3u8' -o -name '*.tmp' \) -delete
 
 section "SyLC Phase 6 live MVC MKV/ISO -> selectable HLS session"
@@ -84,6 +97,7 @@ echo "Report: $REPORT"
 echo "Decoder workers: $THREADS"
 echo "Swap eyes: $SWAP_EYES"
 echo "Audio stream (relative): $AUDIO_STREAM"
+echo "Subtitle selection: $SUBTITLE_ID (kind=$SUBTITLE_KIND format=${SUBTITLE_FORMAT:-none} stream=$SUBTITLE_STREAM)"
 echo "Video encoder mode: $ENCODER_MODE"
 echo "Output mode: $OUTPUT_MODE"
 echo "Requested start: $START_SECONDS s"
@@ -98,6 +112,14 @@ done
 [[ -x "$BIN" ]] || fail "Streaming decoder/compositor is missing or not executable: $BIN"
 [[ "$THREADS" == 0 ]] || fail "The Phase 6 MVC compatibility build currently requires SYLC_THREADS=0"
 [[ "$AUDIO_STREAM" =~ ^[0-9]+$ ]] || fail "SYLC_AUDIO_STREAM must be a non-negative relative audio index"
+[[ "$SUBTITLE_STREAM" =~ ^-?[0-9]+$ ]] || fail "SYLC_SUBTITLE_STREAM must be an integer"
+case "$SUBTITLE_KIND" in
+  none) [[ "$SUBTITLE_ID" == off ]] || fail "Subtitle kind none requires subtitle ID off" ;;
+  embedded) [[ "$SOURCE_PATH" != *.iso && "$SUBTITLE_STREAM" -ge 0 ]] || fail "Embedded subtitle selection requires an MKV/MK3D subtitle stream" ;;
+  sidecar) [[ -n "$SUBTITLE_PATH" && -r "$SUBTITLE_PATH" ]] || fail "Selected sidecar subtitle is missing or unreadable" ;;
+  iso-pgs) [[ "$SOURCE_PATH" == *.iso && "$SUBTITLE_STREAM" -ge 0 ]] || fail "Blu-ray PGS subtitle selection requires an ISO source and non-negative track index" ;;
+  *) fail "SYLC_SUBTITLE_KIND must be none, embedded, sidecar, or iso-pgs" ;;
+esac
 [[ "$SWAP_EYES" == 0 || "$SWAP_EYES" == 1 ]] || fail "SYLC_SWAP_EYES must be 0 or 1"
 case "$OUTPUT_MODE" in
   half-sbs|full-sbs|half-ou|full-ou|left-eye|right-eye|anaglyph-color|anaglyph-dubois|passive-rows-left-top|passive-rows-right-top) ;;
@@ -668,16 +690,61 @@ PYAUDIO
 fi
 echo "Audio output policy: $AUDIO_OUTPUT_POLICY"
 
+SUBTITLE_ACTIVE=0
+SUBTITLE_RENDER_MODE=none
+SUBTITLE_BITMAP_LABEL=
+SUBTITLE_EXTRA_INPUT_ARGS=()
+if [[ "$SUBTITLE_KIND" != none && "$SUBTITLE_ID" != off ]]; then
+  SUBTITLE_ACTIVE=1
+  case "${SUBTITLE_FORMAT,,}" in
+    srt|subrip|ass|ssa|vtt|webvtt|mov_text|text)
+      SUBTITLE_RENDER_MODE=text
+      ffmpeg -hide_banner -filters 2>/dev/null | grep -E '(^|[[:space:]])subtitles[[:space:]]' >/dev/null || \
+        fail "This FFmpeg build does not provide the libass subtitles filter"
+      ;;
+    pgs|hdmv_pgs_subtitle|sup)
+      SUBTITLE_RENDER_MODE=bitmap
+      ffmpeg -hide_banner -filters 2>/dev/null | grep -E '(^|[[:space:]])overlay[[:space:]]' >/dev/null || \
+        fail "This FFmpeg build does not provide the overlay filter required for PGS subtitles"
+      case "$SUBTITLE_KIND" in
+        embedded)
+          SUBTITLE_BITMAP_LABEL="[1:s:${SUBTITLE_STREAM}]"
+          ;;
+        sidecar)
+          SUBTITLE_BITMAP_LABEL="[2:s:0]"
+          if [[ "$EFFECTIVE_START" != 0.000000 ]]; then
+            SUBTITLE_EXTRA_INPUT_ARGS=(-thread_queue_size 4096 -ss "$EFFECTIVE_START" -f sup -i "$SUBTITLE_PATH")
+          else
+            SUBTITLE_EXTRA_INPUT_ARGS=(-thread_queue_size 4096 -f sup -i "$SUBTITLE_PATH")
+          fi
+          ;;
+        iso-pgs)
+          SUBTITLE_BITMAP_LABEL="[2:s:0]"
+          SUBTITLE_EXTRA_INPUT_ARGS=(-thread_queue_size 4096 -f sup -i "$ISO_SUBTITLE_FIFO")
+          ;;
+        *) fail "Bitmap subtitles require embedded, sidecar, or iso-pgs subtitle kind" ;;
+      esac
+      ;;
+    *) fail "Selected subtitle format is not supported by this release: ${SUBTITLE_FORMAT:-unknown}" ;;
+  esac
+fi
+
+echo "Subtitle render mode: $SUBTITLE_RENDER_MODE"
+
 VIDEO_ARGS=()
 VIDEO_FILTER_ARGS=()
-if [[ -n "$VIDEO_POST_FILTER" ]]; then
-  if [[ "$ENCODER_MODE" == vaapi ]]; then
-    VIDEO_FILTER_ARGS=(-vf "${VIDEO_POST_FILTER},format=nv12,hwupload")
-  else
-    VIDEO_FILTER_ARGS=(-vf "$VIDEO_POST_FILTER")
+FILTER_ARGS=()
+MAP_ARGS=()
+if [[ "$SUBTITLE_ACTIVE" == 0 ]]; then
+  if [[ -n "$VIDEO_POST_FILTER" ]]; then
+    if [[ "$ENCODER_MODE" == vaapi ]]; then
+      VIDEO_FILTER_ARGS=(-vf "${VIDEO_POST_FILTER},format=nv12,hwupload")
+    else
+      VIDEO_FILTER_ARGS=(-vf "$VIDEO_POST_FILTER")
+    fi
+  elif [[ "$ENCODER_MODE" == vaapi ]]; then
+    VIDEO_FILTER_ARGS=(-vf format=nv12,hwupload)
   fi
-elif [[ "$ENCODER_MODE" == vaapi ]]; then
-  VIDEO_FILTER_ARGS=(-vf format=nv12,hwupload)
 fi
 case "$ENCODER_MODE" in
   vaapi)
@@ -694,6 +761,114 @@ case "$ENCODER_MODE" in
     )
     ;;
 esac
+
+if [[ "$SUBTITLE_ACTIVE" == 1 ]]; then
+  python3 - "$SUBTITLE_FILTER_SCRIPT" "$OUTPUT_MODE" "$WIDTH" "$HEIGHT" "$PRODUCER_WIDTH" "$PRODUCER_HEIGHT" \
+      "$SUBTITLE_RENDER_MODE" "$SUBTITLE_KIND" "$SOURCE_PATH" "$SUBTITLE_PATH" "$SUBTITLE_STREAM" "$EFFECTIVE_START" \
+      "$VIDEO_POST_FILTER" "$ENCODER_MODE" "$AUDIO_FILTER" "$SUBTITLE_BITMAP_LABEL" <<'PYSUBFILTER'
+from pathlib import Path
+import sys
+(
+    output_path, mode, width_raw, height_raw, producer_width_raw, producer_height_raw,
+    render_mode, kind, source_path, sidecar_path, stream_raw, start_raw, post_filter,
+    encoder_mode, audio_filter, bitmap_label,
+) = sys.argv[1:]
+width = int(width_raw)
+height = int(height_raw)
+producer_width = int(producer_width_raw)
+producer_height = int(producer_height_raw)
+stream = int(stream_raw)
+start = float(start_raw)
+
+def escape_filter_path(value: str) -> str:
+    return value.replace('\\', '\\\\').replace("'", "\\'").replace(':', '\\:')
+
+graph = []
+base_label = '[subtitle_base]'
+
+if render_mode == 'text':
+    subtitle_source = source_path if kind == 'embedded' else sidecar_path
+    subtitle_filter = f"subtitles=filename='{escape_filter_path(subtitle_source)}'"
+    if kind == 'embedded':
+        subtitle_filter += f":si={stream}"
+
+    def timed(label: str) -> str:
+        return f"{label}setpts=PTS+{start:.6f}/TB,{subtitle_filter},setpts=PTS-STARTPTS"
+
+    if mode in {'half-sbs', 'full-sbs', 'passive-rows-left-top', 'passive-rows-right-top'}:
+        eye_width = producer_width // 2
+        graph.append('[0:v]split=2[eye_l_in][eye_r_in]')
+        graph.append(f"[eye_l_in]crop={eye_width}:{producer_height}:0:0,scale={width}:{height}:flags=bilinear,{timed('')},scale={eye_width}:{producer_height}:flags=bilinear[eye_l_sub]")
+        graph.append(f"[eye_r_in]crop={eye_width}:{producer_height}:{eye_width}:0,scale={width}:{height}:flags=bilinear,{timed('')},scale={eye_width}:{producer_height}:flags=bilinear[eye_r_sub]")
+        graph.append(f"[eye_l_sub][eye_r_sub]hstack=inputs=2{base_label}")
+    elif mode in {'half-ou', 'full-ou'}:
+        eye_height = producer_height // 2
+        graph.append('[0:v]split=2[eye_l_in][eye_r_in]')
+        graph.append(f"[eye_l_in]crop={producer_width}:{eye_height}:0:0,scale={width}:{height}:flags=bilinear,{timed('')},scale={producer_width}:{eye_height}:flags=bilinear[eye_l_sub]")
+        graph.append(f"[eye_r_in]crop={producer_width}:{eye_height}:0:{eye_height},scale={width}:{height}:flags=bilinear,{timed('')},scale={producer_width}:{eye_height}:flags=bilinear[eye_r_sub]")
+        graph.append(f"[eye_l_sub][eye_r_sub]vstack=inputs=2{base_label}")
+    elif mode in {'anaglyph-color', 'anaglyph-dubois'}:
+        # Text test 1 rendered after anaglyph conversion. Preserve that stable
+        # path for text while bitmap PGS uses per-eye overlays below.
+        graph.append(f"[0:v]{post_filter},{timed('')}{base_label}")
+        post_filter = ''
+    else:
+        graph.append(f"[0:v]{timed('')}{base_label}")
+else:
+    if not bitmap_label:
+        raise SystemExit('bitmap subtitle input label is missing')
+    # FFmpeg decodes PGS/SUP through sub2video as a transparent full-frame
+    # canvas. Give each eye its own copy before any SBS/OU packing, anaglyph
+    # conversion, or passive-row weaving. This places the caption at neutral
+    # screen depth and preserves the authored PGS position and graphics.
+    graph.append(f"{bitmap_label}scale={width}:{height}:flags=bilinear,format=rgba,split=2[sub_l][sub_r]")
+    overlay = 'overlay=eof_action=pass:shortest=0:repeatlast=0'
+    sbs_modes = {
+        'half-sbs', 'full-sbs', 'anaglyph-color', 'anaglyph-dubois',
+        'passive-rows-left-top', 'passive-rows-right-top',
+    }
+    if mode in sbs_modes:
+        eye_width = producer_width // 2
+        graph.append('[0:v]split=2[eye_l_in][eye_r_in]')
+        graph.append(f"[eye_l_in]crop={eye_width}:{producer_height}:0:0,scale={width}:{height}:flags=bilinear[eye_l_full]")
+        graph.append(f"[eye_r_in]crop={eye_width}:{producer_height}:{eye_width}:0,scale={width}:{height}:flags=bilinear[eye_r_full]")
+        graph.append(f"[eye_l_full][sub_l]{overlay},scale={eye_width}:{producer_height}:flags=bilinear[eye_l_sub]")
+        graph.append(f"[eye_r_full][sub_r]{overlay},scale={eye_width}:{producer_height}:flags=bilinear[eye_r_sub]")
+        graph.append(f"[eye_l_sub][eye_r_sub]hstack=inputs=2{base_label}")
+    elif mode in {'half-ou', 'full-ou'}:
+        eye_height = producer_height // 2
+        graph.append('[0:v]split=2[eye_l_in][eye_r_in]')
+        graph.append(f"[eye_l_in]crop={producer_width}:{eye_height}:0:0,scale={width}:{height}:flags=bilinear[eye_l_full]")
+        graph.append(f"[eye_r_in]crop={producer_width}:{eye_height}:0:{eye_height},scale={width}:{height}:flags=bilinear[eye_r_full]")
+        graph.append(f"[eye_l_full][sub_l]{overlay},scale={producer_width}:{eye_height}:flags=bilinear[eye_l_sub]")
+        graph.append(f"[eye_r_full][sub_r]{overlay},scale={producer_width}:{eye_height}:flags=bilinear[eye_r_sub]")
+        graph.append(f"[eye_l_sub][eye_r_sub]vstack=inputs=2{base_label}")
+    else:
+        # Mono modes need one authored subtitle plane. Consume sub_l; sub_r is
+        # intentionally discarded with nullsink so the split graph is valid.
+        graph.append('[sub_r]nullsink')
+        graph.append(f"[0:v]scale={width}:{height}:flags=bilinear[mono_full]")
+        graph.append(f"[mono_full][sub_l]{overlay},scale={producer_width}:{producer_height}:flags=bilinear{base_label}")
+
+video_chain = base_label
+if post_filter:
+    graph.append(f"{video_chain}{post_filter}[post_video]")
+    video_chain = '[post_video]'
+if encoder_mode == 'vaapi':
+    graph.append(f"{video_chain}format=nv12,hwupload[vout]")
+else:
+    graph.append(f"{video_chain}format=yuv420p[vout]")
+graph.append(audio_filter)
+Path(output_path).write_text(';\n'.join(graph) + '\n', encoding='utf-8')
+PYSUBFILTER
+  echo "Subtitle filter graph: $SUBTITLE_FILTER_SCRIPT"
+  cat "$SUBTITLE_FILTER_SCRIPT"
+  FILTER_ARGS=(-filter_complex_script "$SUBTITLE_FILTER_SCRIPT")
+  MAP_ARGS=(-map '[vout]' -map '[aout]')
+else
+  FILTER_ARGS=(-filter_complex "$AUDIO_FILTER")
+  MAP_ARGS=(-map 0:v:0 -map '[aout]')
+fi
 
 COMMON_ARGS=(--input - --threads "$THREADS" --source-fps "$SOURCE_FPS" --skip-pairs "$SKIP_PAIRS" --mode "$PRODUCER_MODE")
 if [[ "$SWAP_EYES" == 1 ]]; then COMMON_ARGS+=(--swap-eyes); fi
@@ -718,9 +893,16 @@ fi
 echo "HLS becomes available while this pipeline is still running."
 PIPE_START=$(date +%s%N)
 AUDIO_SOURCE_STATUS=0
+SUBTITLE_SOURCE_STATUS=0
 set +e
 if [[ "$SOURCE_KIND" == iso ]]; then
   mkfifo "$ISO_AUDIO_FIFO"
+  if [[ "$SUBTITLE_RENDER_MODE" == bitmap && "$SUBTITLE_KIND" == iso-pgs ]]; then
+    mkfifo "$ISO_SUBTITLE_FIFO"
+    "$ISO_BIN" --input "$SOURCE_PATH" --subtitle --subtitle-track "$SUBTITLE_STREAM" --start-seconds "$EFFECTIVE_START" \
+      >"$ISO_SUBTITLE_FIFO" 2> >(tee -a "$ISO_SUBTITLE_LOG" >&2) &
+    ISO_SUBTITLE_PID=$!
+  fi
   "$ISO_BIN" --input "$SOURCE_PATH" --audio --audio-track "$AUDIO_STREAM" --start-seconds "$EFFECTIVE_START" \
     >"$ISO_AUDIO_FIFO" 2> >(tee -a "$ISO_AUDIO_LOG" >&2) &
   ISO_AUDIO_PID=$!
@@ -733,8 +915,9 @@ if [[ "$SOURCE_KIND" == iso ]]; then
     -thread_queue_size 32 -f rawvideo -pix_fmt yuv420p -video_size "${PRODUCER_WIDTH}x${PRODUCER_HEIGHT}" \
     -framerate "$FPS_EXPR" -i pipe:0 \
     -thread_queue_size 8192 -f "$ISO_AUDIO_FORMAT" -i "$ISO_AUDIO_FIFO" \
-    -filter_complex "$AUDIO_FILTER" \
-    -map 0:v:0 -map '[aout]' \
+    "${SUBTITLE_EXTRA_INPUT_ARGS[@]}" \
+    "${FILTER_ARGS[@]}" \
+    "${MAP_ARGS[@]}" \
     "${VIDEO_FILTER_ARGS[@]}" \
     "${VIDEO_ARGS[@]}" \
     -c:a ac3 -b:a "$AUDIO_BITRATE" "${AUDIO_CHANNEL_ARGS[@]}" \
@@ -748,7 +931,12 @@ if [[ "$SOURCE_KIND" == iso ]]; then
   wait "$ISO_AUDIO_PID"
   AUDIO_SOURCE_STATUS=$?
   ISO_AUDIO_PID=
-  rm -f "$ISO_AUDIO_FIFO"
+  if [[ -n "${ISO_SUBTITLE_PID:-}" ]]; then
+    wait "$ISO_SUBTITLE_PID"
+    SUBTITLE_SOURCE_STATUS=$?
+    ISO_SUBTITLE_PID=
+  fi
+  rm -f "$ISO_AUDIO_FIFO" "$ISO_SUBTITLE_FIFO"
 else
   ffmpeg -hide_banner -loglevel warning "${VIDEO_SEEK_ARGS[@]}" -i "$SOURCE_PATH" \
     -map 0:v:0 -c:v copy -bsf:v h264_mp4toannexb \
@@ -760,8 +948,9 @@ else
     -thread_queue_size 32 -f rawvideo -pix_fmt yuv420p -video_size "${PRODUCER_WIDTH}x${PRODUCER_HEIGHT}" \
     -framerate "$FPS_EXPR" -i pipe:0 \
     -thread_queue_size 128 "${AUDIO_SEEK_ARGS[@]}" -i "$SOURCE_PATH" \
-    -filter_complex "$AUDIO_FILTER" \
-    -map 0:v:0 -map '[aout]' \
+    "${SUBTITLE_EXTRA_INPUT_ARGS[@]}" \
+    "${FILTER_ARGS[@]}" \
+    "${MAP_ARGS[@]}" \
     "${VIDEO_FILTER_ARGS[@]}" \
     "${VIDEO_ARGS[@]}" \
     -c:a ac3 -b:a "$AUDIO_BITRATE" "${AUDIO_CHANNEL_ARGS[@]}" \
@@ -781,10 +970,12 @@ FFMPEG_STATUS=${PIPE_STATUSES[2]:-99}
 
 echo "Video source/demux status: $DEMUX_STATUS"
 [[ "$SOURCE_KIND" == iso ]] && echo "ISO audio source status: $AUDIO_SOURCE_STATUS"
+[[ "$SUBTITLE_KIND" == iso-pgs ]] && echo "ISO PGS subtitle source status: $SUBTITLE_SOURCE_STATUS"
 echo "MVC producer status: $PRODUCER_STATUS"
 echo "HLS encoder status: $FFMPEG_STATUS"
 [[ $DEMUX_STATUS -eq 0 ]] || fail "$SOURCE_KIND video source failed with status $DEMUX_STATUS"
 [[ $AUDIO_SOURCE_STATUS -eq 0 ]] || fail "ISO audio source failed with status $AUDIO_SOURCE_STATUS"
+[[ $SUBTITLE_SOURCE_STATUS -eq 0 ]] || fail "ISO PGS subtitle source failed with status $SUBTITLE_SOURCE_STATUS"
 [[ $PRODUCER_STATUS -eq 0 ]] || fail "MVC decoder/compositor failed with status $PRODUCER_STATUS"
 [[ $FFMPEG_STATUS -eq 0 ]] || fail "HLS encoder/muxer failed with status $FFMPEG_STATUS"
 [[ -s "$PLAYLIST" ]] || fail "No HLS playlist was created"
@@ -828,6 +1019,7 @@ PY
 echo "Segments: $SEGMENTS"
 echo "Pipeline wall time: $ELAPSED s"
 echo "Output mode: $OUTPUT_MODE ($OUTPUT_LABEL)"
+echo "Subtitle: $SUBTITLE_ID (kind=$SUBTITLE_KIND format=${SUBTITLE_FORMAT:-none})"
 echo "Output dimensions: $EXPECTED_DIMENSIONS"
 echo "Intermediate compositor: $PRODUCER_MODE ($EXPECTED_PRODUCER_DIMENSIONS)"
 echo "Encoded audio: $ENCODED_AUDIO"

@@ -18,6 +18,12 @@ struct DeclaredAudioStream {
     std::string language;
 };
 
+struct DeclaredSubtitleStream {
+    std::uint16_t pid = 0;
+    std::uint8_t coding_type = 0;
+    std::string language;
+};
+
 struct FeatureSegment {
     std::string clip;
     std::string video_path;
@@ -29,6 +35,7 @@ struct FeatureSegment {
     std::uint32_t out45k = 0;
     std::uint16_t base_video_pid = 0;
     std::vector<DeclaredAudioStream> declared_audio;
+    std::vector<DeclaredSubtitleStream> declared_subtitles;
 };
 
 struct FeatureSelection {

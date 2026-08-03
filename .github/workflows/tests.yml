@@ -4,26 +4,14 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: read
-
 jobs:
   server:
     runs-on: ubuntu-24.04
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
-            cmake \
-            ninja-build \
-            build-essential \
-            libbluray2 \
-            nodejs
-
+          sudo apt-get install -y ffmpeg cmake ninja-build build-essential libbluray2 nodejs
       - name: Run test suite
-        run: bash tests/run_all.sh
+        run: ./tests/run_all.sh

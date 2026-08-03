@@ -90,6 +90,10 @@
               <span>Audio track</span>
               <select id="audioStream"><option value="0">Default audio track</option></select>
             </label>
+            <label class="option-field" for="subtitleTrack">
+              <span>Subtitles</span>
+              <select id="subtitleTrack"><option value="off">Off</option></select>
+            </label>
             <label class="check-field" for="swapEyes">
               <input id="swapEyes" type="checkbox">
               <span><strong>Swap eyes</strong><small>Exchange left and right before composing the selected layout.</small></span>
@@ -112,7 +116,7 @@
             <button id="playSelected" class="button primary" type="button" disabled>Play selected title</button>
             <button id="seekButton" class="button seek" type="button" disabled>Apply mode / seek current session</button>
           </div>
-          <p id="seekHelp" class="notice">Seeking or changing layout replaces the active conversion but keeps the previous HLS URL readable from disk.</p>
+          <p id="seekHelp" class="notice">Seeking or changing layout, audio, or subtitles replaces the active conversion but keeps the previous HLS URL readable from disk.</p>
         </div>
       </section>
 

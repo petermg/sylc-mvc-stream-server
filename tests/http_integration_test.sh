@@ -11,6 +11,11 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$TMP/media" "$TMP/phase6/build" "$TMP/state" "$TMP/legacy"
 ffmpeg -v error -f lavfi -i color=size=16x16:rate=24 -t 2 -c:v ffv1 -y "$TMP/media/ShortMVC.mkv"
+cat > "$TMP/media/ShortMVC.eng.srt" <<'EOF'
+1
+00:00:00,000 --> 00:00:01,500
+SyLC subtitle test
+EOF
 printf 'fake-udf-image\n' > "$TMP/media/TestDisc3D.iso"
 cp "$ROOT/tests/fake-phase5.sh" "$TMP/phase6/run-phase6.sh"
 chmod +x "$TMP/phase6/run-phase6.sh"
@@ -32,6 +37,9 @@ if '--probe' in args:
             {'index': 0, 'format': 'dts', 'profile': 'DTS-HD MA', 'language': 'eng', 'channels': 6, 'sampleRate': 48000, 'supported': True},
             {'index': 1, 'format': 'ac3', 'profile': 'AC-3', 'language': 'spa', 'channels': 6, 'sampleRate': 48000, 'supported': True},
             {'index': 2, 'format': 'truehd', 'profile': 'Dolby TrueHD', 'language': 'eng', 'channels': 8, 'sampleRate': 48000, 'supported': True, 'decodePath': 'native TrueHD extraction and FFmpeg lossless decode', 'truehdMajorSync': True, 'embeddedAc3Core': True},
+        ],
+        'subtitleTracks': [
+            {'index': 0, 'pid': 4608, 'format': 'pgs', 'profile': 'Blu-ray PGS', 'language': 'eng', 'supported': True},
         ],
     }))
 elif '--plan-video-seek' in args:
@@ -62,7 +70,7 @@ for _ in $(seq 1 50); do
   sleep .1
 done
 health=$(curl -fsS "http://127.0.0.1:$PORT/api/health")
-python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["version"] == "0.7.0-alpha.2"; assert d["setupRequired"] is False; assert len(d["mediaLibraries"]) == 1; assert d["isoSourceAdapterAvailable"]; assert d["nativeTrueHdAudio"] is True; assert "truehd" in d["supportedIsoAudioFormats"]; assert "full-sbs" in d["supportedOutputModes"]; assert "full-ou" in d["supportedOutputModes"]; assert "anaglyph-color" in d["supportedOutputModes"]; assert "anaglyph-dubois" in d["supportedOutputModes"]; assert "passive-rows-left-top" in d["supportedOutputModes"]; assert "passive-rows-right-top" in d["supportedOutputModes"]' <<<"$health"
+python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["version"] == "0.7.0-alpha.3"; assert d["setupRequired"] is False; assert len(d["mediaLibraries"]) == 1; assert d["isoSourceAdapterAvailable"]; assert d["nativeTrueHdAudio"] is True; assert "truehd" in d["supportedIsoAudioFormats"]; assert d["pgsSubtitleBurnIn"] is True; assert d["pgsSubtitleCatalogOnly"] is False; assert d["pgsZeroTimelineAnchor"] is True; assert "sup" in d["sidecarSubtitleFormats"]; assert "full-sbs" in d["supportedOutputModes"]; assert "full-ou" in d["supportedOutputModes"]; assert "anaglyph-color" in d["supportedOutputModes"]; assert "anaglyph-dubois" in d["supportedOutputModes"]; assert "passive-rows-left-top" in d["supportedOutputModes"]; assert "passive-rows-right-top" in d["supportedOutputModes"]' <<<"$health"
 libraries=$(curl -fsS "http://127.0.0.1:$PORT/api/libraries?refresh=1")
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert len(d["libraries"]) == 1; x=d["libraries"][0]; assert x["readable"] is True; assert x["indexedFiles"] == 2' <<<"$libraries"
 browse=$(curl -fsS "http://127.0.0.1:$PORT/api/filesystem/directories?path=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$TMP")")
@@ -73,9 +81,9 @@ iso_id=$(python3 -c 'import json,sys; print(next(x["id"] for x in json.load(sys.
 probe=$(curl -fsS -X POST -H 'Content-Type: application/json' \
   -d "{\"mediaId\":\"$media_id\"}" \
   "http://127.0.0.1:$PORT/api/media/probe")
-python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["media"]["durationSeconds"] > 1' <<<"$probe"
+python3 -c 'import json,sys; m=json.load(sys.stdin)["media"]; assert m["durationSeconds"] > 1; tracks=m["subtitleTracks"]; assert any(t["id"] == "sidecar:ShortMVC.eng.srt" and t["supported"] for t in tracks)' <<<"$probe"
 curl -fsS -X POST -H 'Content-Type: application/json' \
-  -d "{\"mediaId\":\"$media_id\",\"mode\":\"full-sbs\",\"audioStream\":0,\"swapEyes\":true,\"startSeconds\":0}" \
+  -d "{\"mediaId\":\"$media_id\",\"mode\":\"full-sbs\",\"audioStream\":0,\"subtitleId\":\"sidecar:ShortMVC.eng.srt\",\"swapEyes\":true,\"startSeconds\":0}" \
   "http://127.0.0.1:$PORT/api/sessions" >/dev/null
 
 status=
@@ -85,7 +93,7 @@ for _ in $(seq 1 80); do
   [[ $playable == True ]] && break
   sleep .1
 done
-session_id=$(python3 -c 'import json,sys; d=json.load(sys.stdin)["session"]; assert d["outputMode"] == "full-sbs"; assert d["swapEyes"] is True; print(d["id"])' <<<"$status")
+session_id=$(python3 -c 'import json,sys; d=json.load(sys.stdin)["session"]; assert d["outputMode"] == "full-sbs"; assert d["swapEyes"] is True; assert d["subtitleId"] == "sidecar:ShortMVC.eng.srt"; print(d["id"])' <<<"$status")
 curl -fsS "http://127.0.0.1:$PORT/hls/$session_id/stream.m3u8" > "$TMP/stream.m3u8"
 grep -q 'segment-001.ts' "$TMP/stream.m3u8"
 
@@ -102,7 +110,7 @@ grep -q 'Source verification: True' "$TMP/report.txt"
 seek=$(curl -fsS -X POST -H 'Content-Type: application/json' \
   -d '{"startSeconds":1,"mode":"anaglyph-dubois","swapEyes":false}' \
   "http://127.0.0.1:$PORT/api/sessions/current/seek")
-replacement_id=$(python3 -c 'import json,sys; d=json.load(sys.stdin); s=d["session"]; print(s["id"]); assert s["replacesSessionId"] == d["previousSessionId"]; assert s["outputMode"] == "anaglyph-dubois"; assert s["swapEyes"] is False' <<<"$seek")
+replacement_id=$(python3 -c 'import json,sys; d=json.load(sys.stdin); s=d["session"]; print(s["id"]); assert s["replacesSessionId"] == d["previousSessionId"]; assert s["outputMode"] == "anaglyph-dubois"; assert s["swapEyes"] is False; assert s["subtitleId"] == "sidecar:ShortMVC.eng.srt"' <<<"$seek")
 [[ $replacement_id != "$session_id" ]]
 curl -fsS "http://127.0.0.1:$PORT/hls/$session_id/stream.m3u8" | grep -q 'segment-003.ts'
 for _ in $(seq 1 80); do
@@ -116,7 +124,7 @@ done
 iso_probe=$(curl -fsS -X POST -H 'Content-Type: application/json' \
   -d "{\"mediaId\":\"$iso_id\"}" \
   "http://127.0.0.1:$PORT/api/media/probe")
-python3 -c 'import json,sys; m=json.load(sys.stdin)["media"]; assert m["sourceType"] == "bluray-iso"; assert m["playlist"] == "00001.mpls"; assert len(m["audioTracks"]) == 3; assert m["audioTracks"][2]["format"] == "truehd"; assert m["audioTracks"][2]["supported"] is True' <<<"$iso_probe"
+python3 -c 'import json,sys; m=json.load(sys.stdin)["media"]; assert m["sourceType"] == "bluray-iso"; assert m["playlist"] == "00001.mpls"; assert len(m["audioTracks"]) == 3; assert m["audioTracks"][2]["format"] == "truehd"; assert m["audioTracks"][2]["supported"] is True; assert len(m["subtitleTracks"]) == 1; assert m["subtitleTracks"][0]["id"] == "iso-pgs:4608"; assert m["subtitleTracks"][0]["supported"] is True' <<<"$iso_probe"
 
 curl -fsS -X POST -H 'Content-Type: application/json' \
   -d "{\"mediaId\":\"$iso_id\",\"mode\":\"half-sbs\",\"audioStream\":1,\"swapEyes\":false,\"startSeconds\":600}" \

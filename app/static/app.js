@@ -11,6 +11,7 @@ const state = {
   previousPlaylistUrl: null,
   optionSessionId: null,
   audioSignature: null,
+  subtitleSignature: null,
   poll: null,
   token: localStorage.getItem('sylcApiToken') || '',
   tokenConfigured: false,
@@ -25,7 +26,7 @@ const els = {};
 [
   'healthBadge','authPanel','authToken','authButton','authError','setupPanel','setupName','setupPath','setupRecursive','setupToken','setupBrowse','setupTest','setupSave','setupResult','setupError','appContent',
   'sessionTitle','statusGrid','sessionError','playbackNotice','openStream','stopButton','reportButton',
-  'selectedTitle','selectedDuration','outputMode','audioStream','swapEyes','positionSlider','startInput','positionLabel','playSelected','seekButton','seekHelp',
+  'selectedTitle','selectedDuration','outputMode','audioStream','subtitleTrack','swapEyes','positionSlider','startInput','positionLabel','playSelected','seekButton','seekHelp',
   'refreshButton','searchInput','mediaNotice','mediaList','cleanupButton','librariesList','addLibraryButton','libraryEditor','libraryId','libraryName','libraryPath','libraryRecursive','libraryEnabled','libraryBrowse','libraryTest','librarySave','libraryCancel','libraryTestResult','tokenStatus','newToken','saveToken',
   'folderDialog','folderCurrent','folderUp','folderChoose','folderList'
 ].forEach((id) => { els[id] = $(id); });
@@ -105,6 +106,42 @@ function renderAudioTracks(preferred = null) {
   else if (firstSupported) els.audioStream.value = firstSupported.value;
   els.audioStream.disabled = state.busy || !state.selected || !tracks.length;
 }
+function subtitleTrackLabel(track) {
+  const parts = [];
+  const language = String(track.language || 'und').toUpperCase();
+  parts.push(track.title || language || 'Subtitle');
+  parts.push(String(track.profile || track.format || 'subtitle').toUpperCase());
+  if (track.forced) parts.push('forced');
+  if (track.hearingImpaired) parts.push('SDH/HI');
+  if (track.kind === 'sidecar') parts.push('sidecar');
+  if (track.supported === false) parts.push(track.reason || 'unsupported');
+  return parts.join(' · ');
+}
+function subtitleTracksForSelection() {
+  return Array.isArray(state.selected?.subtitleTracks) ? state.selected.subtitleTracks : [];
+}
+function renderSubtitleTracks(preferred = null) {
+  const tracks = subtitleTracksForSelection();
+  const signature = JSON.stringify(tracks.map((track) => [track.id, track.title, track.language, track.format, track.kind, track.forced, track.hearingImpaired, track.supported, track.reason]));
+  const desired = preferred == null ? String(els.subtitleTrack.value || 'off') : String(preferred || 'off');
+  if (signature !== state.subtitleSignature) {
+    els.subtitleTrack.replaceChildren();
+    const off = document.createElement('option');
+    off.value = 'off'; off.textContent = 'Off'; els.subtitleTrack.append(off);
+    tracks.forEach((track) => {
+      const option = document.createElement('option');
+      option.value = String(track.id || '');
+      option.textContent = subtitleTrackLabel(track);
+      option.disabled = track.supported === false;
+      els.subtitleTrack.append(option);
+    });
+    state.subtitleSignature = signature;
+  }
+  const desiredOption = [...els.subtitleTrack.options].find((option) => option.value === desired && !option.disabled);
+  els.subtitleTrack.value = desiredOption ? desiredOption.value : 'off';
+  els.subtitleTrack.disabled = state.busy || !state.selected;
+}
+
 function parseStartSeconds(text) {
   const value = String(text || '').trim();
   if (!value) return 0;
@@ -161,6 +198,7 @@ function renderSeekControls() {
   els.selectedDuration.textContent = hasSelection ? `Full length ${formatSeconds(state.selectedDuration)}${isoDetail}` : (state.selected ? 'Reading duration…' : 'Duration unavailable');
   els.outputMode.disabled = state.busy;
   renderAudioTracks();
+  renderSubtitleTracks();
   els.swapEyes.disabled = state.busy;
   els.positionSlider.disabled = !hasSelection || state.busy;
   els.positionSlider.max = hasSelection ? String(Math.max(0, Math.floor(state.selectedDuration - 0.001))) : '0';
@@ -176,6 +214,8 @@ function synchronizeOutputOptionsFromSession() {
   if (s.outputMode) els.outputMode.value = s.outputMode;
   renderAudioTracks(s.audioStream);
   els.audioStream.value = String(Number(s.audioStream || 0));
+  renderSubtitleTracks(s.subtitleId || 'off');
+  els.subtitleTrack.value = String(s.subtitleId || 'off');
   els.swapEyes.checked = Boolean(s.swapEyes);
   state.optionSessionId = s.id;
 }
@@ -199,6 +239,7 @@ function renderSession() {
     metric('Source length', s.sourceDurationSeconds == null ? '—' : formatSeconds(s.sourceDurationSeconds)),
     metric('Output mode', modeLabel(s.outputMode)),
     metric('Audio track', String(Number(s.audioStream || 0))),
+    metric('Subtitles', s.subtitleTrack ? subtitleTrackLabel(s.subtitleTrack) : 'Off'),
     metric('Eye order', s.swapEyes ? 'Swapped' : 'Normal'),
     metric('Started at', formatSeconds(s.requestedStartSeconds)),
     metric('Source position', formatSeconds(s.sourcePositionSeconds)),
@@ -259,6 +300,7 @@ function renderMedia() {
 async function selectMedia(item, preservePosition = false) {
   state.selected = item;
   state.audioSignature = null;
+  state.subtitleSignature = null;
   state.selectedDuration = Number.isFinite(item.durationSeconds) ? Number(item.durationSeconds) : null;
   state.positionTouched = false;
   if (!preservePosition) setPosition(0, false);
@@ -268,6 +310,7 @@ async function selectMedia(item, preservePosition = false) {
     if (!state.selected || state.selected.id !== item.id) return;
     state.selected = {...item, ...data.media};
     state.audioSignature = null;
+    state.subtitleSignature = null;
     state.selectedDuration = Number(data.media.durationSeconds);
     if (sameSelectedAsSession() && !preservePosition) setPosition(state.session?.sourcePositionSeconds || state.session?.requestedStartSeconds || 0, false);
     else setPosition(parseStartSeconds(els.startInput.value), false);
@@ -285,7 +328,9 @@ function synchronizeSelectionFromSession() {
   if (!item) return;
   state.selected = {...item, durationSeconds: state.session.sourceDurationSeconds};
   if (Array.isArray(state.session.source?.audioTracks)) state.selected.audioTracks = state.session.source.audioTracks;
+  if (Array.isArray(state.session.source?.subtitleTracks)) state.selected.subtitleTracks = state.session.source.subtitleTracks;
   state.audioSignature = null;
+  state.subtitleSignature = null;
   state.selectedDuration = Number(state.session.sourceDurationSeconds);
   setPosition(state.session.sourcePositionSeconds || state.session.requestedStartSeconds || 0, false);
   renderMedia();
@@ -326,7 +371,7 @@ async function startSelected() {
   state.busy = true; renderSeekControls();
   els.playSelected.textContent = 'Starting…';
   try {
-    const data = await api('/api/sessions', {method:'POST', body:JSON.stringify({mediaId:state.selected.id, mode:els.outputMode.value, audioStream:Number(els.audioStream.value || 0), swapEyes:els.swapEyes.checked, startSeconds})});
+    const data = await api('/api/sessions', {method:'POST', body:JSON.stringify({mediaId:state.selected.id, mode:els.outputMode.value, audioStream:Number(els.audioStream.value || 0), subtitleId:String(els.subtitleTrack.value || 'off'), swapEyes:els.swapEyes.checked, startSeconds})});
     state.session = data.session; state.positionTouched = false; state.previousPlaylistUrl = null; state.optionSessionId = data.session.id;
     renderSession(); renderMedia();
   } catch (error) { alert(error.message); }
@@ -341,7 +386,7 @@ async function seekCurrent(targetOverride = null) {
   state.busy = true; renderSeekControls();
   els.seekButton.textContent = 'Replacing stream…';
   try {
-    const data = await api('/api/sessions/current/seek', {method:'POST', body:JSON.stringify({startSeconds, mode:els.outputMode.value, audioStream:Number(els.audioStream.value || 0), swapEyes:els.swapEyes.checked})});
+    const data = await api('/api/sessions/current/seek', {method:'POST', body:JSON.stringify({startSeconds, mode:els.outputMode.value, audioStream:Number(els.audioStream.value || 0), subtitleId:String(els.subtitleTrack.value || 'off'), swapEyes:els.swapEyes.checked})});
     state.previousPlaylistUrl = data.previousPlaylistUrl;
     state.session = data.session;
     state.optionSessionId = data.session.id;
@@ -608,6 +653,7 @@ els.startInput.addEventListener('change', () => {
 });
 els.outputMode.addEventListener('change', renderSeekControls);
 els.audioStream.addEventListener('change', renderSeekControls);
+els.subtitleTrack.addEventListener('change', renderSeekControls);
 els.swapEyes.addEventListener('change', renderSeekControls);
 els.playSelected.addEventListener('click', startSelected);
 els.seekButton.addEventListener('click', () => seekCurrent());

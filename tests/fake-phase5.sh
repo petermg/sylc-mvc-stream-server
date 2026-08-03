@@ -8,6 +8,11 @@ start=${SYLC_START_SECONDS:-0}
 mode=${SYLC_OUTPUT_MODE:-half-sbs}
 swap=${SYLC_SWAP_EYES:-0}
 audio=${SYLC_AUDIO_STREAM:-0}
+subtitle=${SYLC_SUBTITLE_ID:-off}
+subtitle_kind=${SYLC_SUBTITLE_KIND:-none}
+subtitle_stream=${SYLC_SUBTITLE_STREAM:--1}
+subtitle_path=${SYLC_SUBTITLE_PATH:-}
+subtitle_format=${SYLC_SUBTITLE_FORMAT:-}
 mkdir -p "$work" "$hls"
 cat > "$report" <<EOF
 ============================================================
@@ -18,6 +23,11 @@ Requested start: $start s
 Output mode: $mode
 Swap eyes: $swap
 Audio stream: $audio
+Subtitle: $subtitle
+Subtitle kind: $subtitle_kind
+Subtitle stream: $subtitle_stream
+Subtitle path: $subtitle_path
+Subtitle format: $subtitle_format
 EOF
 for i in 0 1 2 3; do
   printf 'fake-segment-%s\n' "$i" > "$hls/segment-$(printf '%03d' "$i").ts.tmp"

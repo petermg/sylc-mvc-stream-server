@@ -529,6 +529,10 @@ FeatureSelection resolveFeature(const std::string& iso_path, udfread* udf, std::
                                                   audio.format, audio.rate,
                                                   audio.language});
             }
+            for (const auto& subtitle : source.presentation_graphics) {
+                segment.declared_subtitles.push_back({subtitle.pid, subtitle.coding_type,
+                                                      subtitle.language});
+            }
             segments.push_back(std::move(segment));
         }
         if (complete && !segments.empty()) {

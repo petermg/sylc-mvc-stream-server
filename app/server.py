@@ -31,8 +31,11 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qs, unquote, urlparse
 
-APP_VERSION = "0.7.0-alpha.2"
+APP_VERSION = "0.7.0-alpha.3"
 OUTPUT_MODES = ("half-sbs", "full-sbs", "half-ou", "full-ou", "left-eye", "right-eye", "anaglyph-color", "anaglyph-dubois", "passive-rows-left-top", "passive-rows-right-top")
+TEXT_SUBTITLE_CODECS = {"subrip", "ass", "ssa", "webvtt", "mov_text", "text"}
+BITMAP_SUBTITLE_CODECS = {"hdmv_pgs_subtitle", "pgs"}
+SIDECAR_SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt", ".sup"}
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 
@@ -557,6 +560,8 @@ class Session:
     output_mode: str = "half-sbs"
     swap_eyes: bool = False
     audio_stream: int = 0
+    subtitle_id: str = "off"
+    subtitle_track: dict[str, Any] | None = None
     requested_start_seconds: float = 0.0
     effective_start_seconds: float | None = None
     replacement_of: str | None = None
@@ -621,6 +626,8 @@ class Session:
             "outputMode": self.output_mode,
             "swapEyes": self.swap_eyes,
             "audioStream": self.audio_stream,
+            "subtitleId": self.subtitle_id,
+            "subtitleTrack": self.subtitle_track,
             "state": self.state,
             "createdAt": self.created_at,
             "endedAt": self.ended_at,
@@ -670,7 +677,7 @@ class SessionManager:
         self._lock = threading.RLock()
         self._replace_lock = threading.Lock()
         self._probe_lock = threading.Lock()
-        self._probe_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+        self._probe_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._current: Session | None = None
         self._maintenance_stop = threading.Event()
         self._maintenance_thread: threading.Thread | None = None
@@ -714,6 +721,64 @@ class SessionManager:
         with self._lock:
             return self._current
 
+    @staticmethod
+    def _sidecar_language_and_flags(source: Path, sidecar: Path) -> tuple[str, bool, bool, str]:
+        remainder = sidecar.stem[len(source.stem):].lstrip("._- ")
+        tokens = [token for token in re.split(r"[._ -]+", remainder) if token]
+        lowered = {token.lower() for token in tokens}
+        forced = "forced" in lowered
+        hearing_impaired = bool(lowered & {"sdh", "hi", "hearingimpaired", "hearing-impaired"})
+        language = "und"
+        for token in tokens:
+            lower = token.lower()
+            if lower in {"forced", "sdh", "hi", "cc", "default"}:
+                continue
+            if 2 <= len(lower) <= 3 and lower.isalpha():
+                language = lower
+                break
+        title = " ".join(token for token in tokens if token.lower() not in {"forced", "sdh", "hi", "cc"})
+        return language, forced, hearing_impaired, title
+
+    def _sidecar_subtitle_tracks(self, source: Path) -> list[dict[str, Any]]:
+        tracks: list[dict[str, Any]] = []
+        try:
+            siblings = sorted(source.parent.iterdir(), key=lambda item: item.name.lower())
+        except OSError:
+            return tracks
+        prefix = source.stem + "."
+        for candidate in siblings:
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            suffix = candidate.suffix.lower()
+            if suffix not in SIDECAR_SUBTITLE_EXTENSIONS:
+                continue
+            if candidate.stem != source.stem and not candidate.name.startswith(prefix):
+                continue
+            language, forced, hearing_impaired, title = self._sidecar_language_and_flags(source, candidate)
+            supported = suffix in {".srt", ".ass", ".ssa", ".vtt", ".sup"}
+            tracks.append({
+                "id": f"sidecar:{candidate.name}",
+                "kind": "sidecar",
+                "index": len(tracks),
+                "format": suffix.lstrip("."),
+                "language": language,
+                "title": title or candidate.name,
+                "forced": forced,
+                "default": False,
+                "hearingImpaired": hearing_impaired,
+                "supported": supported,
+                "reason": "" if supported else "This sidecar subtitle format is unsupported.",
+                "_path": str(candidate.resolve(strict=True)),
+            })
+        return tracks
+
+    @staticmethod
+    def _public_subtitle_tracks(probe: dict[str, Any]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for track in probe.get("subtitleTracks") or []:
+            result.append({key: value for key, value in track.items() if not key.startswith("_")})
+        return result
+
     def _probe_source_uncached(self, source: Path) -> dict[str, Any]:
         if source.suffix.lower() == ".iso":
             iso_binary = self.config.phase5_project / "build" / "sylc_iso_source"
@@ -739,11 +804,23 @@ class SessionManager:
                 raise ApiError(400, "The selected ISO has incomplete Blu-ray feature metadata.", str(exc)) from exc
             if not math.isfinite(duration) or duration <= 0 or not math.isfinite(fps) or fps <= 0:
                 raise ApiError(400, "The selected ISO has invalid duration or frame-rate metadata.")
+            disc_tracks = []
+            for index, track in enumerate(data.get("subtitleTracks") or []):
+                item = dict(track)
+                item.setdefault("id", f"iso-pgs:{item.get('pid', index)}")
+                item.setdefault("kind", "iso-pgs")
+                item.setdefault("index", index)
+                item.setdefault("format", "pgs")
+                item["supported"] = bool(item.get("supported", True))
+                item.setdefault("reason", "" if item["supported"] else "This Blu-ray subtitle track is unsupported.")
+                disc_tracks.append(item)
+            subtitle_tracks = disc_tracks + self._sidecar_subtitle_tracks(source)
             return {
                 "duration": duration, "fps": fps, "width": width, "height": height,
                 "playlist": data.get("playlist"), "selectionMethod": data.get("selectionMethod"),
                 "segmentCount": data.get("segmentCount"), "decoysFiltered": data.get("decoysFiltered"),
-                "audioTracks": data.get("audioTracks") or [], "sourceType": "bluray-iso",
+                "audioTracks": data.get("audioTracks") or [], "subtitleTracks": subtitle_tracks,
+                "sourceType": "bluray-iso",
                 "libblurayAuthoritative": data.get("libblurayAuthoritative"),
                 "libblurayVersion": data.get("libblurayVersion"),
                 "selectedTitleIndex": data.get("selectedTitleIndex"),
@@ -751,8 +828,9 @@ class SessionManager:
             }
 
         command = [
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "format=duration:stream=avg_frame_rate,start_time,duration:stream_tags=DURATION",
+            "ffprobe", "-v", "error",
+            "-show_entries",
+            "format=duration:stream=index,codec_type,codec_name,avg_frame_rate,start_time,duration:stream_disposition=default,forced,hearing_impaired:stream_tags=language,title,DURATION",
             "-of", "json", str(source),
         ]
         try:
@@ -766,7 +844,8 @@ class SessionManager:
             raise ApiError(400, "The selected file could not be inspected as media.", completed.stderr.strip())
         try:
             data = json.loads(completed.stdout)
-            stream = (data.get("streams") or [])[0]
+            streams = data.get("streams") or []
+            stream = next(item for item in streams if item.get("codec_type") == "video")
             format_duration = float(data["format"]["duration"])
             duration = stream.get("duration")
             if duration in (None, "N/A", ""):
@@ -787,11 +866,52 @@ class SessionManager:
             raise ApiError(400, "The selected file has no usable duration or frame rate.", str(exc)) from exc
         if not math.isfinite(duration) or duration <= 0 or not math.isfinite(fps) or fps <= 0:
             raise ApiError(400, "The selected file has invalid duration or frame-rate metadata.")
-        return {"duration": duration, "fps": fps, "sourceType": "mvc-mkv"}
+
+        subtitle_tracks: list[dict[str, Any]] = []
+        relative_index = 0
+        for item in streams:
+            if item.get("codec_type") != "subtitle":
+                continue
+            codec = str(item.get("codec_name") or "unknown").lower()
+            tags = item.get("tags") or {}
+            disposition = item.get("disposition") or {}
+            supported = codec in TEXT_SUBTITLE_CODECS or codec in BITMAP_SUBTITLE_CODECS
+            subtitle_tracks.append({
+                "id": f"mkv:{relative_index}",
+                "kind": "embedded",
+                "index": relative_index,
+                "streamIndex": int(item.get("index", relative_index)),
+                "format": codec,
+                "language": str(tags.get("language") or "und"),
+                "title": str(tags.get("title") or ""),
+                "forced": bool(disposition.get("forced")),
+                "default": bool(disposition.get("default")),
+                "hearingImpaired": bool(disposition.get("hearing_impaired")),
+                "supported": supported,
+                "reason": "" if supported else f"Embedded subtitle codec {codec} is unsupported.",
+            })
+            relative_index += 1
+        subtitle_tracks.extend(self._sidecar_subtitle_tracks(source))
+        return {"duration": duration, "fps": fps, "sourceType": "mvc-mkv", "subtitleTracks": subtitle_tracks}
 
     def _probe_source(self, source: Path) -> dict[str, Any]:
         stat = source.stat()
-        key = (str(source.resolve()), stat.st_size, stat.st_mtime_ns)
+        sidecar_signature: list[tuple[str, int, int]] = []
+        try:
+            prefix = source.stem + "."
+            for candidate in source.parent.iterdir():
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                if candidate.suffix.lower() not in SIDECAR_SUBTITLE_EXTENSIONS:
+                    continue
+                if candidate.stem != source.stem and not candidate.name.startswith(prefix):
+                    continue
+                candidate_stat = candidate.stat()
+                sidecar_signature.append((candidate.name, candidate_stat.st_size, candidate_stat.st_mtime_ns))
+        except OSError:
+            pass
+        sidecar_signature.sort()
+        key = (str(source.resolve()), stat.st_size, stat.st_mtime_ns, tuple(sidecar_signature))
         with self._probe_lock:
             cached = self._probe_cache.get(key)
             if cached is not None:
@@ -828,6 +948,31 @@ class SessionManager:
             raise ApiError(400, "MKV audio-track selection is not yet exposed; audioStream must be 0 for MKV/MK3D.")
 
     @staticmethod
+    def _parse_subtitle_id(raw_subtitle: Any, default: str = "off") -> str:
+        value = default if raw_subtitle is None else raw_subtitle
+        if not isinstance(value, str):
+            raise ApiError(400, "subtitleId must be a subtitle identifier or 'off'.")
+        value = value.strip()
+        if not value:
+            value = "off"
+        if len(value) > 512 or any(ord(character) < 32 for character in value):
+            raise ApiError(400, "subtitleId is invalid.")
+        return value
+
+    @staticmethod
+    def _validate_subtitle_id(probe: dict[str, Any], subtitle_id: str) -> dict[str, Any] | None:
+        if subtitle_id == "off":
+            return None
+        for track in probe.get("subtitleTracks") or []:
+            if track.get("id") != subtitle_id:
+                continue
+            if not track.get("supported"):
+                reason = track.get("reason") or "The selected subtitle format is not supported."
+                raise ApiError(400, f"Subtitle track {subtitle_id} is unavailable.", str(reason))
+            return dict(track)
+        raise ApiError(400, f"Subtitle track {subtitle_id} is not available for this title.")
+
+    @staticmethod
     def _parse_start_seconds(raw_start: Any) -> float:
         try:
             start_seconds = float(0 if raw_start is None else raw_start)
@@ -859,9 +1004,9 @@ class SessionManager:
         result = dict(media)
         result["durationSeconds"] = round(probe["duration"], 6)
         result["fps"] = round(probe["fps"], 9)
-        for key in ("sourceType", "playlist", "selectionMethod", "segmentCount", "decoysFiltered", "audioTracks", "width", "height", "libblurayAuthoritative", "libblurayVersion", "selectedTitleIndex", "titleCount", "mainTitleHint"):
+        for key in ("sourceType", "playlist", "selectionMethod", "segmentCount", "decoysFiltered", "audioTracks", "subtitleTracks", "width", "height", "libblurayAuthoritative", "libblurayVersion", "selectedTitleIndex", "titleCount", "mainTitleHint"):
             if key in probe:
-                result[key] = probe[key]
+                result[key] = self._public_subtitle_tracks(probe) if key == "subtitleTracks" else probe[key]
         return result
 
     def create(self, body: dict[str, Any], replacement_of: str | None = None) -> Session:
@@ -872,18 +1017,20 @@ class SessionManager:
         swap_eyes = self._parse_swap_eyes(body.get("swapEyes"), False)
         start_seconds = self._parse_start_seconds(body.get("startSeconds", 0))
         audio_stream = self._parse_audio_stream(body.get("audioStream", 0))
+        subtitle_id = self._parse_subtitle_id(body.get("subtitleId"), "off")
 
         source, media = self.catalog.resolve(media_id)
         probe = self._probe_source(source)
         self._validate_audio_stream(source, probe, audio_stream)
+        subtitle_track = self._validate_subtitle_id(probe, subtitle_id)
         duration = probe["duration"]
         if start_seconds >= duration:
             raise ApiError(400, f"Start position must be before the end of the title ({duration:.3f} seconds).")
         media = dict(media)
         media["durationSeconds"] = round(duration, 6)
-        for key in ("sourceType", "playlist", "selectionMethod", "segmentCount", "decoysFiltered", "audioTracks", "width", "height", "libblurayAuthoritative", "libblurayVersion", "selectedTitleIndex", "titleCount", "mainTitleHint"):
+        for key in ("sourceType", "playlist", "selectionMethod", "segmentCount", "decoysFiltered", "audioTracks", "subtitleTracks", "width", "height", "libblurayAuthoritative", "libblurayVersion", "selectedTitleIndex", "titleCount", "mainTitleHint"):
             if key in probe:
-                media[key] = probe[key]
+                media[key] = self._public_subtitle_tracks(probe) if key == "subtitleTracks" else probe[key]
         self.ensure_capacity()
         with self._lock:
             if self._current and self._current.state in {"starting", "running", "buffering", "playable", "stopping"}:
@@ -894,6 +1041,7 @@ class SessionManager:
             session = Session(
                 id=session_id, source_path=source, media=media, session_dir=session_dir,
                 output_mode=mode, swap_eyes=swap_eyes, audio_stream=audio_stream,
+                subtitle_id=subtitle_id, subtitle_track=({key: value for key, value in subtitle_track.items() if not key.startswith("_")} if subtitle_track else None),
                 requested_start_seconds=start_seconds, replacement_of=replacement_of,
                 source_duration_seconds=duration,
                 source_fps=probe["fps"],
@@ -950,7 +1098,10 @@ class SessionManager:
             output_mode = self._parse_output_mode(body.get("mode"), previous.output_mode)
             swap_eyes = self._parse_swap_eyes(body.get("swapEyes"), previous.swap_eyes)
             audio_stream = self._parse_audio_stream(body.get("audioStream", previous.audio_stream))
-            self._validate_audio_stream(previous.source_path, self._probe_source(previous.source_path), audio_stream)
+            subtitle_id = self._parse_subtitle_id(body.get("subtitleId"), previous.subtitle_id)
+            replacement_probe = self._probe_source(previous.source_path)
+            self._validate_audio_stream(previous.source_path, replacement_probe, audio_stream)
+            self._validate_subtitle_id(replacement_probe, subtitle_id)
 
             if active:
                 self.stop()
@@ -968,6 +1119,7 @@ class SessionManager:
                     "mediaId": media_id,
                     "mode": output_mode,
                     "audioStream": audio_stream,
+                    "subtitleId": subtitle_id,
                     "swapEyes": swap_eyes,
                     "startSeconds": target,
                 },
@@ -1099,6 +1251,11 @@ class SessionManager:
             "SYLC_OUTPUT_MODE": session.output_mode,
             "SYLC_SWAP_EYES": "1" if session.swap_eyes else "0",
             "SYLC_AUDIO_STREAM": str(session.audio_stream),
+            "SYLC_SUBTITLE_ID": session.subtitle_id,
+            "SYLC_SUBTITLE_KIND": str((session.subtitle_track or {}).get("kind", "none")),
+            "SYLC_SUBTITLE_STREAM": str((session.subtitle_track or {}).get("index", -1)),
+            "SYLC_SUBTITLE_PATH": str((self._validate_subtitle_id(self._probe_source(session.source_path), session.subtitle_id) or {}).get("_path", "")),
+            "SYLC_SUBTITLE_FORMAT": str((session.subtitle_track or {}).get("format", "")),
             "SYLC_ENCODER_MODE": self.config.encoder_mode,
             "SYLC_VAAPI_DEVICE": str(self.config.vaapi_device),
             "SYLC_START_SECONDS": f"{session.requested_start_seconds:.6f}",
@@ -1305,6 +1462,8 @@ class SessionManager:
             f"Output mode: {session.output_mode}",
             f"Swap eyes: {session.swap_eyes}",
             f"Audio stream: {session.audio_stream}",
+            f"Subtitle: {session.subtitle_id}",
+            f"Subtitle track: {json.dumps(session.subtitle_track, sort_keys=True) if session.subtitle_track else 'off'}",
             f"Replacement of session: {session.replacement_of or 'none'}",
             f"Source duration: {session.source_duration_seconds}",
             f"Source verification: {session.source_verified}",
@@ -1626,6 +1785,13 @@ class ServiceApp:
             "isoSourceAdapterAvailable": (self.config.phase5_project / "build" / "sylc_iso_source").is_file(),
             "nativeTrueHdAudio": True,
             "supportedIsoAudioFormats": ["truehd", "dts", "ac3", "eac3"],
+            "subtitleBurnIn": True,
+            "supportedTextSubtitleFormats": ["srt", "subrip", "ass", "ssa", "vtt", "webvtt"],
+            "sidecarSubtitleFormats": ["srt", "ass", "ssa", "vtt", "sup"],
+            "pgsSubtitleBurnIn": True,
+            "supportedBitmapSubtitleFormats": ["pgs", "hdmv_pgs_subtitle", "sup"],
+            "pgsSubtitleCatalogOnly": False,
+            "pgsZeroTimelineAnchor": True,
             "streamingRunnerAvailable": self.config.phase5_wrapper.is_file(),
             "directStreaming": True,
             "encoderMode": self.config.encoder_mode,
@@ -1647,7 +1813,7 @@ APP: ServiceApp | None = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "SyLCMVCStream/0.7.0-alpha.2"
+    server_version = "SyLCMVCStream/0.7.0-alpha.3"
 
     @property
     def app(self) -> ServiceApp:

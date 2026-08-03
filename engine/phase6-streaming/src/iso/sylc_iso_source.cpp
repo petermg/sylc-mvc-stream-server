@@ -1,5 +1,6 @@
 #include "sylc_iso_feature_posix.h"
 #include "sylc_m2ts_audio_demuxer.h"
+#include "sylc_m2ts_pgs_demuxer.h"
 #include "mvc_ssif_demuxer.h"
 #include "mvc_source_pair_offset_calibrator.h"
 #include "mvc_ssif_phase_aligner.h"
@@ -30,18 +31,20 @@ public:
 };
 
 struct Options {
-    enum class Mode { Probe, PlanVideoSeek, Video, Audio } mode = Mode::Probe;
+    enum class Mode { Probe, PlanVideoSeek, Video, Audio, Subtitle } mode = Mode::Probe;
     std::string input;
     double start_seconds = 0.0;
     std::size_t audio_track = 0;
+    std::size_t subtitle_track = 0;
     std::size_t recovery_backoff_entries = 0;
 };
 
 [[noreturn]] void usage(const char* program, const std::string& error = {}) {
     if (!error.empty()) std::cerr << "ERROR: " << error << "\n\n";
-    std::cerr << "Usage: " << program << " --input FILE.iso [--probe|--plan-video-seek|--video|--audio] [options]\n"
+    std::cerr << "Usage: " << program << " --input FILE.iso [--probe|--plan-video-seek|--video|--audio|--subtitle] [options]\n"
               << "  --start-seconds N   movie timeline start for video/audio\n"
               << "  --audio-track N     relative selected-title audio track (default 0)\n"
+              << "  --subtitle-track N  relative selected-title PGS track (default 0)\n"
               << "  --recovery-backoff-entries N  preceding CLPI entries for nonzero ISO seek recovery\n";
     std::exit(error.empty() ? 0 : 2);
 }
@@ -60,8 +63,10 @@ Options parseOptions(int argc, char** argv) {
         else if (arg == "--plan-video-seek") { options.mode = Options::Mode::PlanVideoSeek; mode_seen = true; }
         else if (arg == "--video") { options.mode = Options::Mode::Video; mode_seen = true; }
         else if (arg == "--audio") { options.mode = Options::Mode::Audio; mode_seen = true; }
+        else if (arg == "--subtitle") { options.mode = Options::Mode::Subtitle; mode_seen = true; }
         else if (arg == "--start-seconds") options.start_seconds = std::stod(value("--start-seconds"));
         else if (arg == "--audio-track") options.audio_track = static_cast<std::size_t>(std::stoull(value("--audio-track")));
+        else if (arg == "--subtitle-track") options.subtitle_track = static_cast<std::size_t>(std::stoull(value("--subtitle-track")));
         else if (arg == "--recovery-backoff-entries") options.recovery_backoff_entries = static_cast<std::size_t>(std::stoull(value("--recovery-backoff-entries")));
         else if (arg == "--help" || arg == "-h") usage(argv[0]);
         else usage(argv[0], "Unknown option: " + arg);
@@ -590,6 +595,21 @@ int runProbe(const Options& options,
     }
     if (!audio.tracks.empty()) output << '\n';
     output << "  ],\n"
+              << "  \"subtitleTracks\": [";
+    const auto& declared_subtitles = feature.segments.front().declared_subtitles;
+    for (std::size_t i = 0; i < declared_subtitles.size(); ++i) {
+        const auto& track = declared_subtitles[i];
+        if (i) output << ',';
+        output << "\n    {\"index\":" << i
+                  << ",\"pid\":" << track.pid
+                  << ",\"streamType\":" << static_cast<unsigned>(track.coding_type)
+                  << ",\"format\":\"pgs\""
+                  << ",\"profile\":\"Blu-ray PGS\""
+                  << ",\"language\":\"" << jsonEscape(track.language) << "\""
+                  << ",\"supported\":true}";
+    }
+    if (!declared_subtitles.empty()) output << '\n';
+    output << "  ],\n"
               << "  \"diagnostics\": \"" << jsonEscape(sylc_iso::diagnostics(volume)) << "\"\n"
               << "}\n";
     const std::string text = output.str();
@@ -832,6 +852,156 @@ std::size_t findTrack(const std::vector<sylc_audio::AudioTrackInfo>& tracks,
     return static_cast<std::size_t>(-1);
 }
 
+
+void writeBe32(std::uint32_t value) {
+    const std::uint8_t bytes[4] = {
+        static_cast<std::uint8_t>((value >> 24U) & 0xffU),
+        static_cast<std::uint8_t>((value >> 16U) & 0xffU),
+        static_cast<std::uint8_t>((value >> 8U) & 0xffU),
+        static_cast<std::uint8_t>(value & 0xffU),
+    };
+    writeAll(bytes, sizeof(bytes));
+}
+
+void writeBe16(std::uint16_t value) {
+    const std::uint8_t bytes[2] = {
+        static_cast<std::uint8_t>((value >> 8U) & 0xffU),
+        static_cast<std::uint8_t>(value & 0xffU),
+    };
+    writeAll(bytes, sizeof(bytes));
+}
+
+void writeSupSegment(const sylc_pgs::PgsSegment& segment, std::int64_t pts90k) {
+    const std::uint8_t signature[2] = {'P', 'G'};
+    writeAll(signature, sizeof(signature));
+    const auto timestamp = static_cast<std::uint32_t>(
+            std::max<std::int64_t>(0, pts90k));
+    writeBe32(timestamp);
+    writeBe32(timestamp);
+    writeAll(&segment.type, 1);
+    writeBe16(static_cast<std::uint16_t>(segment.payload.size()));
+    if (!segment.payload.empty()) writeAll(segment.payload.data(), segment.payload.size());
+}
+
+class SupDisplayWriter {
+public:
+    explicit SupDisplayWriter(std::int64_t target90k) : target90k_(target90k) {}
+
+    void feed(sylc_pgs::PgsSegment segment) {
+        current_.push_back(std::move(segment));
+        if (current_.back().type != 0x80) return;
+        const std::int64_t pts = displayPts(current_);
+        if (pts <= target90k_) {
+            before_.push_back(current_);
+        } else {
+            ensureInitialState(&current_);
+            emit(current_, pts - target90k_);
+        }
+        current_.clear();
+    }
+
+    void finish() {
+        if (!current_.empty()) {
+            const std::int64_t pts = displayPts(current_);
+            if (pts <= target90k_) before_.push_back(current_);
+            else {
+                ensureInitialState(&current_);
+                emit(current_, pts - target90k_);
+            }
+            current_.clear();
+        }
+        ensureInitialState(nullptr);
+    }
+
+    std::uint64_t displaySets() const { return display_sets_; }
+    std::uint64_t segments() const { return segments_; }
+    bool restoredInitialState() const { return restored_initial_state_; }
+    bool wroteTimelineAnchor() const { return wrote_timeline_anchor_; }
+
+private:
+    std::int64_t target90k_ = 0;
+    std::vector<sylc_pgs::PgsSegment> current_;
+    std::vector<std::vector<sylc_pgs::PgsSegment>> before_;
+    bool output_started_ = false;
+    bool restored_initial_state_ = false;
+    bool wrote_timeline_anchor_ = false;
+    std::uint64_t display_sets_ = 0;
+    std::uint64_t segments_ = 0;
+
+    static std::int64_t displayPts(const std::vector<sylc_pgs::PgsSegment>& set) {
+        for (const auto& segment : set) if (segment.pts90k >= 0) return segment.pts90k;
+        return 0;
+    }
+
+    bool emitClearTimelineAnchor(
+            const std::vector<sylc_pgs::PgsSegment>& reference) {
+        for (const auto& segment : reference) {
+            if (segment.type != 0x16 || segment.payload.size() < 11) continue;
+
+            // A standalone SUP input whose first authored event begins later
+            // than zero is rebased by FFmpeg to timestamp zero. That made the
+            // first ISO PGS caption appear at movie startup. Seed the stream
+            // with a transparent epoch-start PCS at zero so FFmpeg preserves
+            // every later authored timestamp. The width, height, and frame-rate
+            // fields come from the first real PCS; no objects are presented.
+            sylc_pgs::PgsSegment clear_pcs;
+            clear_pcs.type = 0x16;
+            clear_pcs.payload.assign(segment.payload.begin(),
+                                     segment.payload.begin() + 11);
+            const std::uint16_t composition = static_cast<std::uint16_t>(
+                    (static_cast<std::uint16_t>(clear_pcs.payload[5]) << 8U)
+                    | clear_pcs.payload[6]);
+            const std::uint16_t anchor_composition = static_cast<std::uint16_t>(
+                    composition - 1U);
+            clear_pcs.payload[5] = static_cast<std::uint8_t>(
+                    (anchor_composition >> 8U) & 0xffU);
+            clear_pcs.payload[6] = static_cast<std::uint8_t>(
+                    anchor_composition & 0xffU);
+            clear_pcs.payload[7] = 0x80;  // epoch start
+            clear_pcs.payload[8] = 0x00;  // palette update flag
+            clear_pcs.payload[9] = 0x00;  // palette id
+            clear_pcs.payload[10] = 0x00; // no composition objects
+            clear_pcs.pts90k = 0;
+            clear_pcs.dts90k = 0;
+
+            sylc_pgs::PgsSegment end;
+            end.type = 0x80;
+            end.pts90k = 0;
+            end.dts90k = 0;
+
+            emit({clear_pcs, end}, 0);
+            wrote_timeline_anchor_ = true;
+            return true;
+        }
+        return false;
+    }
+
+    void ensureInitialState(
+            const std::vector<sylc_pgs::PgsSegment>* first_future_set) {
+        if (output_started_) return;
+        output_started_ = true;
+        if (!before_.empty()) {
+            // Replaying the bounded preroll display sets at timestamp zero
+            // restores any palette/object/window definitions reused by the
+            // active composition at the requested seek point. Emitting only
+            // the final PCS is insufficient because Blu-ray PGS may reference
+            // ODS/PDS data from an earlier display set.
+            for (const auto& set : before_) emit(set, 0);
+            restored_initial_state_ = true;
+            return;
+        }
+        if (first_future_set) emitClearTimelineAnchor(*first_future_set);
+    }
+
+    void emit(const std::vector<sylc_pgs::PgsSegment>& set, std::int64_t pts90k) {
+        for (const auto& segment : set) {
+            writeSupSegment(segment, pts90k);
+            ++segments_;
+        }
+        ++display_sets_;
+    }
+};
+
 int runAudio(const Options& options,
              const std::shared_ptr<sylc_iso::FeatureVolume>& volume) {
     const auto& feature = sylc_iso::selection(volume);
@@ -913,6 +1083,90 @@ int runAudio(const Options& options,
     return samples == 0 ? 1 : 0;
 }
 
+int runSubtitle(const Options& options,
+                const std::shared_ptr<sylc_iso::FeatureVolume>& volume) {
+    const auto& feature = sylc_iso::selection(volume);
+    if (feature.segments.empty()) throw std::runtime_error("selected title has no feature segments");
+    if (options.subtitle_track >= feature.segments.front().declared_subtitles.size()) {
+        throw std::runtime_error("requested ISO subtitle track index is out of range");
+    }
+
+    const auto offsets_us = segmentOffsetsUs(feature);
+    const std::int64_t target_us = static_cast<std::int64_t>(
+            options.start_seconds * 1000000.0 + 0.5);
+    constexpr std::int64_t kSubtitlePrerollUs = 120LL * 1000000LL;
+    const std::int64_t scan_start_us = std::max<std::int64_t>(0, target_us - kSubtitlePrerollUs);
+    std::size_t segment_index = segmentForStart(feature, offsets_us, scan_start_us);
+    SupDisplayWriter writer((target_us * 90000LL + 500000LL) / 1000000LL);
+    std::uint64_t total_packets = 0;
+    std::uint64_t total_pes = 0;
+    std::uint64_t total_segments = 0;
+
+    for (; segment_index < feature.segments.size(); ++segment_index) {
+        const auto& feature_segment = feature.segments[segment_index];
+        if (options.subtitle_track >= feature_segment.declared_subtitles.size()) {
+            throw std::runtime_error("selected PGS track is absent from a later feature segment");
+        }
+        const auto& declared = feature_segment.declared_subtitles[options.subtitle_track];
+        if (declared.coding_type != 0x90) {
+            throw std::runtime_error("selected Blu-ray subtitle stream is not PGS");
+        }
+
+        std::uint64_t size = 0;
+        std::string label;
+        std::string error;
+        auto stream = sylc_iso::openAudioStream(volume, segment_index, &size, &label, &error);
+        if (!stream) throw std::runtime_error(error.empty() ? "could not open ISO PGS source" : error);
+
+        sylc_pgs::M2TSPgsDemuxer demuxer;
+        if (!demuxer.openStream(std::move(stream), size, label, declared.pid, &error)) {
+            throw std::runtime_error(error.empty() ? "could not open ISO PGS demuxer" : error);
+        }
+
+        std::uint64_t byte_offset = 0;
+        std::int64_t clip_in_raw90k = static_cast<std::int64_t>(feature_segment.in45k) * 2LL;
+        std::int64_t anchor_raw90k = clip_in_raw90k;
+        const std::int64_t segment_scan_us = segment_index == segmentForStart(feature, offsets_us, scan_start_us)
+                ? scan_start_us : offsets_us[segment_index];
+        sylc_iso::ClpiAudioSeekAnchor anchor;
+        std::string plan_error;
+        if ((segment_scan_us > offsets_us[segment_index] || feature_segment.in45k > 0)
+                && sylc_iso::planAudioSeek(volume, segment_index, segment_scan_us,
+                                           offsets_us[segment_index], &anchor, &plan_error)) {
+            byte_offset = anchor.byte_offset;
+            clip_in_raw90k = (anchor.clip_in_us * 90000LL + 500000LL) / 1000000LL;
+            anchor_raw90k = (anchor.anchor_raw_pts_us * 90000LL + 500000LL) / 1000000LL;
+            std::cerr << "ISO_SUBTITLE_SEEK " << anchor.detail << "\n";
+        }
+        const std::int64_t global_offset90k =
+                (offsets_us[segment_index] * 90000LL + 500000LL) / 1000000LL;
+        if (!demuxer.selectAt(global_offset90k, byte_offset, clip_in_raw90k,
+                              anchor_raw90k, &error)) {
+            throw std::runtime_error(error.empty() ? "ISO PGS selection failed" : error);
+        }
+
+        sylc_pgs::PgsSegment segment;
+        while (demuxer.readNextSegment(segment, &error)) writer.feed(std::move(segment));
+        if (!error.empty()) throw std::runtime_error(error);
+        total_packets += demuxer.packetCount();
+        total_pes += demuxer.pesCount();
+        total_segments += demuxer.segmentCount();
+        std::cerr << demuxer.diagnostics() << "\n";
+    }
+
+    writer.finish();
+    std::cerr << "ISO_SUBTITLE_RESULT track=" << options.subtitle_track
+              << " packets=" << total_packets
+              << " pes=" << total_pes
+              << " parsed_segments=" << total_segments
+              << " output_display_sets=" << writer.displaySets()
+              << " output_segments=" << writer.segments()
+              << " restored_initial_state=" << (writer.restoredInitialState() ? 1 : 0)
+              << " timeline_anchor=" << (writer.wroteTimelineAnchor() ? 1 : 0)
+              << " preroll_seconds=120\n";
+    return writer.segments() == 0 ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -928,6 +1182,7 @@ int main(int argc, char** argv) {
             case Options::Mode::PlanVideoSeek: return runVideoPlan(options, volume);
             case Options::Mode::Video: return runVideo(options, volume);
             case Options::Mode::Audio: return runAudio(options, volume);
+            case Options::Mode::Subtitle: return runSubtitle(options, volume);
         }
     } catch (const OutputClosed&) {
         std::cerr << "ISO_SOURCE_RESULT consumer_closed=1 status=normal_downstream_shutdown\n";

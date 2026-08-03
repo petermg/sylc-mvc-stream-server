@@ -36,7 +36,7 @@ class ServiceTests(unittest.TestCase):
             "import json,sys\n"
             "args=sys.argv[1:]\n"
             "if '--probe' in args:\n"
-            " print(json.dumps({'ok':True,'sourceType':'bluray-iso','playlist':'00001.mpls','selectionMethod':'libbluray-titles-all','durationSeconds':5400.0,'width':1920,'height':1080,'fps':24000/1001,'hasMVC':True,'segmentCount':2,'decoysFiltered':1,'libblurayAuthoritative':True,'libblurayVersion':'1.3.4','selectedTitleIndex':3,'titleCount':8,'mainTitleHint':3,'audioTracks':[{'index':0,'format':'dts','profile':'DTS-HD MA','language':'eng','channels':6,'sampleRate':48000,'supported':True},{'index':1,'format':'ac3','profile':'AC-3','language':'spa','channels':6,'sampleRate':48000,'supported':True},{'index':2,'format':'truehd','profile':'Dolby TrueHD','language':'eng','channels':8,'sampleRate':48000,'supported':True,'decodePath':'native TrueHD extraction and FFmpeg lossless decode','truehdMajorSync':True,'embeddedAc3Core':True}]}))\n"
+            " print(json.dumps({'ok':True,'sourceType':'bluray-iso','playlist':'00001.mpls','selectionMethod':'libbluray-titles-all','durationSeconds':5400.0,'width':1920,'height':1080,'fps':24000/1001,'hasMVC':True,'segmentCount':2,'decoysFiltered':1,'libblurayAuthoritative':True,'libblurayVersion':'1.3.4','selectedTitleIndex':3,'titleCount':8,'mainTitleHint':3,'audioTracks':[{'index':0,'format':'dts','profile':'DTS-HD MA','language':'eng','channels':6,'sampleRate':48000,'supported':True},{'index':1,'format':'ac3','profile':'AC-3','language':'spa','channels':6,'sampleRate':48000,'supported':True},{'index':2,'format':'truehd','profile':'Dolby TrueHD','language':'eng','channels':8,'sampleRate':48000,'supported':True,'decodePath':'native TrueHD extraction and FFmpeg lossless decode','truehdMajorSync':True,'embeddedAc3Core':True}],'subtitleTracks':[{'index':0,'pid':4608,'format':'pgs','profile':'Blu-ray PGS','language':'eng','supported':True}]}))\n"
             "elif '--plan-video-seek' in args:\n"
             " print(json.dumps({'ok':True,'requestedStartSeconds':0,'actualDemuxStartSeconds':0,'firstOutputSeconds':0,'skipPairs':0,'firstClip':'00001','seekDetail':'fake'}))\n"
             "else:\n"
@@ -164,6 +164,66 @@ class ServiceTests(unittest.TestCase):
         replacement.thread.join(timeout=3)
         manager.shutdown()
 
+    def test_subtitle_selection_is_passed_and_preserved_across_seek(self):
+        sidecar = self.media / "Movie 3D.eng.srt"
+        sidecar.write_text("1\n00:00:00,000 --> 00:00:02,000\nSubtitle test\n", encoding="utf-8")
+        track = {
+            "id": "sidecar:Movie 3D.eng.srt", "kind": "sidecar", "index": 0,
+            "format": "srt", "language": "eng", "supported": True,
+            "_path": str(sidecar.resolve()),
+        }
+        self.manager._probe_source = lambda source: {
+            "duration": 7200.0, "fps": 24.0, "subtitleTracks": [track],
+        }
+        media_id = self.catalog.scan(force=True)[0]["id"]
+        session = self.manager.create({
+            "mediaId": media_id, "subtitleId": track["id"], "startSeconds": 0,
+        })
+        deadline = time.time() + 8
+        while time.time() < deadline and session.state not in {"completed", "failed", "stopped"}:
+            time.sleep(0.05)
+        session.thread.join(timeout=2)
+        self.assertEqual(session.state, "completed", session.last_error)
+        self.assertEqual(session.public(self.config)["subtitleId"], track["id"])
+        report = session.report_path.read_text(encoding="utf-8")
+        self.assertIn("Subtitle: " + track["id"], report)
+        self.assertIn("Subtitle kind: sidecar", report)
+        self.assertIn("Subtitle path: " + str(sidecar.resolve()), report)
+
+        _, replacement = self.manager.seek({"startSeconds": 60})
+        self.assertEqual(replacement.subtitle_id, track["id"])
+        self.manager.stop()
+        replacement.thread.join(timeout=3)
+
+
+    def test_sidecar_sup_is_cataloged_as_supported_bitmap_subtitle(self):
+        sidecar = self.media / "Movie 3D.eng.sup"
+        sidecar.write_bytes(b"PG\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00\x00")
+        tracks = self.manager._sidecar_subtitle_tracks(self.source)
+        track = next(item for item in tracks if item["id"] == "sidecar:Movie 3D.eng.sup")
+        self.assertTrue(track["supported"])
+        self.assertEqual(track["format"], "sup")
+        self.assertEqual(track["language"], "eng")
+
+    def test_probe_cache_invalidates_when_sidecar_changes(self):
+        manager = server.SessionManager(self.config, self.catalog)
+        calls = []
+        manager._probe_source_uncached = lambda source: calls.append(source) or {
+            "duration": 10.0, "fps": 24.0, "subtitleTracks": manager._sidecar_subtitle_tracks(source),
+        }
+        try:
+            first = manager._probe_source(self.source)
+            self.assertEqual(first["subtitleTracks"], [])
+            manager._probe_source(self.source)
+            self.assertEqual(len(calls), 1)
+            sidecar = self.media / "Movie 3D.eng.srt"
+            sidecar.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+            second = manager._probe_source(self.source)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(second["subtitleTracks"][0]["id"], "sidecar:Movie 3D.eng.srt")
+        finally:
+            manager.shutdown()
+
     def test_start_at_is_persisted_and_passed_to_runner(self):
         media_id = self.catalog.scan(force=True)[0]["id"]
         session = self.manager.create({"mediaId": media_id, "startSeconds": 123.5})
@@ -238,6 +298,10 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(info["audioTracks"][2]["format"], "truehd")
             self.assertTrue(info["audioTracks"][2]["supported"])
             self.assertTrue(info["audioTracks"][2]["truehdMajorSync"])
+            self.assertEqual(len(info["subtitleTracks"]), 1)
+            self.assertEqual(info["subtitleTracks"][0]["id"], "iso-pgs:4608")
+            self.assertEqual(info["subtitleTracks"][0]["kind"], "iso-pgs")
+            self.assertTrue(info["subtitleTracks"][0]["supported"])
 
             session = iso_manager.create({"mediaId": iso_item["id"], "audioStream": 1, "mode": "anaglyph-dubois"})
             deadline = time.time() + 8
@@ -259,6 +323,18 @@ class ServiceTests(unittest.TestCase):
             truehd.thread.join(timeout=8)
             self.assertEqual(truehd.state, "completed", truehd.last_error)
             self.assertEqual(truehd.audio_stream, 2)
+
+            pgs = iso_manager.create({
+                "mediaId": iso_item["id"], "audioStream": 0,
+                "subtitleId": "iso-pgs:4608",
+            })
+            pgs.thread.join(timeout=8)
+            self.assertEqual(pgs.state, "completed", pgs.last_error)
+            self.assertEqual(pgs.subtitle_id, "iso-pgs:4608")
+            pgs_report = pgs.report_path.read_text(encoding="utf-8")
+            self.assertIn("Subtitle kind: iso-pgs", pgs_report)
+            self.assertIn("Subtitle stream: 0", pgs_report)
+            self.assertIn("Subtitle format: pgs", pgs_report)
 
             with self.assertRaises(server.ApiError):
                 iso_manager.create({"mediaId": iso_item["id"], "audioStream": 3})

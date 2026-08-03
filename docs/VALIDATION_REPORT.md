@@ -1,32 +1,43 @@
-# Validation report — 0.7.0-alpha.2
+# Validation report — 0.7.0-alpha.3
 
-This update retains the previously validated MVC/ISO/audio engine and adds two server-encoded passive-row output modes.
+Validated August 3, 2026 in the source-build environment and on the live Ubuntu Server 24.04 deployment.
 
-## Automated results for this package
+## Automated and structural validation
 
-- Python session/service and Media Libraries tests: 17/17 pass
-- HTTP playback/replacement-seek integration: pass
-- First-run setup/API-token HTTP integration: pass
-- ISO source-logic smoke checks: pass
-- JavaScript syntax check: pass
-- Python compile check: pass
-- Installer and runner shell syntax checks: pass
-- FFmpeg passive-row filter smoke test: exact 3840×2160 frame size pass
+- Python service/public-alpha tests: PASS
+- HTTP integration and subtitle/session metadata: PASS
+- Setup/API-token integration: PASS
+- ISO selection and seek logic smoke suite: PASS
+- Shell and browser JavaScript syntax checks: PASS
+- Native CMake build: PASS
+- Native MVC recovery and TrueHD framing tests: PASS
+- PGS M2TS/PES extraction and segment reconstruction tests: PASS
+- Clean-package extraction and checksum validation: PASS
 
-The native MVC and TrueHD sources are unchanged from 0.7.0-alpha.1. A complete native rebuild was started in the packaging environment but exceeded its execution-time window; the new feature does not modify those native sources.
+## Real media-path validation
 
-## Real passive-display validation
+The server pipeline was exercised with real MVC media for:
 
-The standalone pre-integration benchmark produced:
+- duplicated text sidecars in Half-SBS;
+- embedded text subtitles after a nonzero seek in Dubois anaglyph;
+- 3840×2160 passive rows with subtitles;
+- embedded MKV PGS;
+- Blu-ray ISO PGS;
+- sidecar SUP;
+- nonzero PGS seek-state restoration;
+- delayed-first-caption startup anchoring.
 
-- left-top passive rows: approximately 1.288× real time;
-- right-top passive rows: approximately 1.295× real time;
-- 330/330 stereo pairs, with no POC, pairing, or decoder errors;
-- 3840×2160 H.264 output;
-- approximately 61.7 Mb/s average video bitrate at VA-API QP 22.
+The tested MVC runs reported zero stereo-pairing or decoder errors.
 
-The left-top sample was visually confirmed as correct on the project's 4K passive 3D display.
+## Live acceptance
 
-## Remaining test scope
+The project owner confirmed on August 3, 2026 that:
 
-The integrated HLS mode still needs full-movie testing on the intended network, Fire TV model, and passive display. The high 4K bitrate may be the limiting factor even though server throughput is sufficient.
+- subtitles render as intended;
+- delayed first ISO PGS captions no longer appear at movie startup;
+- subtitles remain aligned after seeking;
+- the matching Android/Fire TV player's controls and remote Menu-button toggle behave as requested.
+
+## Remaining broader validation
+
+Additional titles and multi-segment playlists remain useful for broader compatibility coverage, especially unusual authored PGS state reuse or clip-boundary events.

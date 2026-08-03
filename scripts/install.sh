@@ -103,6 +103,8 @@ for required in \
   "$BUNDLE_ROOT/engine/phase6-streaming/CMakeLists.txt" \
   "$BUNDLE_ROOT/engine/phase6-streaming/src/sylc_hsbs_pipe.cpp" \
   "$BUNDLE_ROOT/engine/phase6-streaming/src/iso/sylc_iso_source.cpp" \
+  "$BUNDLE_ROOT/engine/phase6-streaming/src/iso/sylc_m2ts_pgs_demuxer.cpp" \
+  "$BUNDLE_ROOT/engine/phase6-streaming/src/iso/sylc_m2ts_pgs_demuxer.h" \
   "$BUNDLE_ROOT/engine/phase6-streaming/src/iso/sylc_truehd_framer.h" \
   "$BUNDLE_ROOT/engine/phase6-streaming/src/videolan/libudfread-1.2.0/COPYING" \
   "$BUNDLE_ROOT/systemd/sylc-mvc-stream.service.in"; do
@@ -312,7 +314,7 @@ lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
 [[ $lan_ip == 0.0.0.0 ]] && lan_ip=127.0.0.1
 
 echo
-echo "SyLC MVC Stream Server 0.7.0-alpha.2 installed successfully."
+echo "SyLC MVC Stream Server 0.7.0-alpha.3 installed successfully."
 echo "Open:   http://${lan_ip}:${PORT}"
 echo "Health: curl -fsS http://${health_host}:${PORT}/api/health | python3 -m json.tool"
 echo "Logs:   journalctl -u sylc-mvc-stream -f"

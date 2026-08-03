@@ -1,8 +1,6 @@
 # SyLC MVC Stream Server
 
-**Public alpha:** `0.7.0-alpha.2`
-
-You can find the player for this server here: https://github.com/petermg/sylc-stream-player-android
+**Current public alpha:** `0.7.0-alpha.3`
 
 SyLC MVC Stream Server converts user-supplied MVC 3D video into ordinary H.264 + AC-3 HLS that can be played by inexpensive Android TV and Fire TV devices, VLC, PotPlayer, and other compatible clients.
 
@@ -21,6 +19,11 @@ It supports:
 - TrueHD/DTS-HD decoding and deterministic AC-3 5.1 output
 - Intel VA-API H.264 encoding or software x264 fallback
 - Multiple read-only media libraries configured from the web UI
+- 3D-aware server-side burn-in for embedded MKV/MK3D text subtitles and PGS bitmap subtitles
+- 3D-aware server-side burn-in for matching `.srt`, `.ass`, `.ssa`, `.vtt`, and `.sup` sidecars
+- Blu-ray ISO PGS cataloging, selection, native M2TS/PES extraction, timeline restoration, and burn-in
+- Zero-time transparent PGS anchoring so delayed first captions retain authored startup timing
+- Subtitle selection in the web UI and API, preserved across seeks and session replacements
 
 ## Important boundaries
 
@@ -41,6 +44,8 @@ sudo apt update
 sudo apt install -y \
   ffmpeg cmake ninja-build build-essential curl libbluray2 unzip
 ```
+
+The installed FFmpeg build must include the `subtitles`/libass filter for text-subtitle burn-in and the standard PGS decoder/`overlay` filter for bitmap subtitle burn-in.
 
 A readable VA-API render device such as `/dev/dri/renderD128` is recommended. Software H.264 encoding is available when VA-API is unavailable.
 
@@ -133,6 +138,7 @@ MVC MKV or unencrypted Blu-ray 3D ISO
   → edge264 MVC decode
   → seek recovery and hidden stabilization pairs
   → stereo/anaglyph composition
+  → 3D-aware per-eye text or PGS/SUP subtitle burn-in when selected
   → FFmpeg VA-API or x264 H.264 encode
   → source audio decode/rematrix to AC-3
   → live HLS session
@@ -145,7 +151,7 @@ See `docs/ARCHITECTURE.md`, `docs/API.md`, and `docs/SOURCE_PROVENANCE.md` for d
 - One active conversion session at a time
 - Linux/systemd installer only
 - No encrypted-disc decryption
-- No menus, BD-J, chapters, or subtitle selection yet
+- No menus, BD-J, or chapters
 - No built-in SMB/NFS mount manager
 - HLS URLs are not token-header protected
 - Hardware support beyond the tested Intel VA-API environment needs broader community validation
@@ -161,6 +167,41 @@ No proprietary 4XVR code, binary, resource, or decompiled implementation is incl
 
 The `passive-rows-left-top` and `passive-rows-right-top` modes create a normal progressive 3840×2160 H.264 stream whose physical rows alternate between the two MVC eyes. Use exact 4K output, disable overscan and TV-side SBS/OU conversion, and use the parity that matches the display. This mode uses substantially more network bandwidth than Full-SBS.
 
-### Passive-display picture processing
 
-For passive row output, disable television motion smoothing/frame interpolation. Features such as TruMotion, MotionFlow, and Auto Motion Plus can disturb the alternating physical eye rows and create obvious motion artifacts. See `docs/PASSIVE_4K_ROWS.md` for the confirmed setup and troubleshooting steps.
+## Subtitles
+
+Subtitles are burned into the server-generated video so they remain correct in SBS,
+over-under, mono, anaglyph, and passive-row output. For stereo layouts the same caption is
+rendered into both eyes at the same authored position, placing it at neutral screen depth.
+The Android player therefore does not draw a separate 2D subtitle overlay.
+
+Supported selectable subtitle sources:
+
+- embedded MKV/MK3D SubRip/SRT, ASS, SSA, and WebVTT text tracks;
+- embedded MKV/MK3D Blu-ray PGS bitmap tracks;
+- Blu-ray ISO PGS tracks declared by the selected feature playlist;
+- sidecar `.srt`, `.ass`, `.ssa`, `.vtt`, and `.sup` files beside an MKV, MK3D, or ISO;
+- `Off`.
+
+Sidecars must use the movie's complete filename stem, for example:
+
+```text
+Movie 3D.mkv
+Movie 3D.eng.srt
+Movie 3D.eng.forced.srt
+Movie 3D.commentary.ass
+Movie 3D.eng.sup
+```
+
+For ISO PGS, the native source adapter reads the selected presentation-graphics PID from
+the base M2TS stream, reconstructs PES and PGS display sets, and supplies a timestamped SUP
+stream to FFmpeg. A bounded subtitle preroll is replayed at timestamp zero after a nonzero
+seek so cached palette, object, and window definitions are available before the active
+composition. Source media and sidecars remain read-only. Changing subtitles creates a
+replacement HLS session at the current source timestamp, just like changing mode or audio.
+
+Current subtitle limitations:
+
+- forced-display flags inside one PGS stream are not yet exposed as a separate “forced only” choice;
+- authored Blu-ray 3D subtitle depth/offset metadata is not applied; captions are placed at neutral screen depth;
+- subtitle size, vertical position, depth, and delay controls are not yet available.

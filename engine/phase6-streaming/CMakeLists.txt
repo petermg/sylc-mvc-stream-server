@@ -49,6 +49,7 @@ add_executable(sylc_iso_source
   src/iso/sylc_libbluray_probe.cpp
   src/iso/sylc_clpi_audio_seek.cpp
   src/iso/sylc_m2ts_audio_demuxer.cpp
+  src/iso/sylc_m2ts_pgs_demuxer.cpp
   src/sylc_m2ts/src/m2ts_reader.cpp
   src/sylc_m2ts/src/h264_nal_parser.cpp
   src/sylc_m2ts/src/mvc_m2ts_demuxer.cpp
@@ -67,6 +68,14 @@ add_executable(sylc_truehd_m2ts_extract_test
   src/sylc_m2ts/src/m2ts_reader.cpp)
 target_include_directories(sylc_truehd_m2ts_extract_test PRIVATE src/iso src/sylc_m2ts/include)
 target_compile_options(sylc_truehd_m2ts_extract_test PRIVATE -O2 -Wall -Wextra)
+
+
+add_executable(sylc_pgs_m2ts_extract_test
+  src/iso/pgs_m2ts_extract_test.cpp
+  src/iso/sylc_m2ts_pgs_demuxer.cpp
+  src/sylc_m2ts/src/m2ts_reader.cpp)
+target_include_directories(sylc_pgs_m2ts_extract_test PRIVATE src/iso src/sylc_m2ts/include)
+target_compile_options(sylc_pgs_m2ts_extract_test PRIVATE -O2 -Wall -Wextra)
 
 add_executable(sylc_recovery_logic_test src/iso/recovery_logic_test.cpp)
 target_include_directories(sylc_recovery_logic_test PRIVATE src/iso src/sylc_m2ts/include)

@@ -81,6 +81,7 @@ Session-create example:
   "mediaId": "...",
   "mode": "anaglyph-dubois",
   "audioStream": 0,
+  "subtitleId": "off",
   "swapEyes": false,
   "startSeconds": 1200
 }
@@ -100,3 +101,31 @@ anaglyph-dubois
 passive-rows-left-top
 passive-rows-right-top
 ```
+
+
+## Subtitle fields
+
+`POST /api/media/probe` returns `media.subtitleTracks`. Each item may contain:
+
+```json
+{
+  "id": "mkv:1",
+  "kind": "embedded",
+  "index": 1,
+  "streamIndex": 5,
+  "format": "subrip",
+  "language": "eng",
+  "title": "English",
+  "forced": false,
+  "default": true,
+  "hearingImpaired": false,
+  "supported": true,
+  "reason": ""
+}
+```
+
+Supported subtitle IDs are `off`, `mkv:N`, `iso-pgs:<pid>`, and
+`sidecar:<filename>`. Embedded MKV PGS, Blu-ray ISO PGS, and sidecar SUP entries
+are returned with `supported: true`. A session returns both `subtitleId` and the
+selected `subtitleTrack`.
+Omitting `subtitleId` on a replacement seek preserves the previous selection.

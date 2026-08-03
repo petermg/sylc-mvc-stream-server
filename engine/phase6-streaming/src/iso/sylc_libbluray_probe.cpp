@@ -331,6 +331,11 @@ bool probeFeaturePath(const std::string& iso_path, Selection* output,
                                              source.format, source.rate,
                                              language(source.lang)});
         }
+        for (std::uint32_t p = 0; clip.pg_streams && p < clip.pg_stream_count; ++p) {
+            const BLURAY_STREAM_INFO& source = clip.pg_streams[p];
+            segment.presentation_graphics.push_back({source.pid, source.coding_type,
+                                                     language(source.lang)});
+        }
         output->segments.push_back(std::move(segment));
     }
     api->free_title_info(selected_info);

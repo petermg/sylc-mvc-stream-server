@@ -16,7 +16,8 @@ This covers:
 - HTTP catalog/session/seek/HLS behavior;
 - ISO selection logic;
 - MVC recovery and TrueHD framing native tests;
-- shell and JavaScript syntax checks.
+- shell and JavaScript syntax checks;
+- subtitle discovery, selection, runner environment, replacement preservation, and sidecar-cache invalidation.
 
 ## Manual installation
 
@@ -40,6 +41,16 @@ Test at least:
 - half/full SBS and OU;
 - Color and Dubois anaglyph;
 - eye swap;
-- stop, replacement seek, and stale-session cleanup.
+- stop, replacement seek, and stale-session cleanup;
+- embedded SRT/ASS plus same-stem sidecar SRT/ASS;
+- subtitle Off/on and track replacement at the current source position;
+- subtitle timing from zero and after nonzero seek;
+- per-eye subtitle duplication in half/full SBS and OU;
+- subtitle rendering in Dubois anaglyph and passive rows;
+- embedded MKV PGS selection and burn-in from zero and after nonzero seek;
+- Blu-ray ISO PGS selection, startup, seek replacement, and track switching;
+- sidecar SUP selection and burn-in;
+- PGS duplication in SBS/OU, neutral-depth Dubois output, and passive-row output;
+- full-length and multi-segment ISO PGS timing, including captions crossing clip boundaries.
 
 Preserve the diagnostic report before starting another title.
