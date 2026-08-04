@@ -214,10 +214,10 @@ else
   VIDEO_DURATION_TAG=$(ffprobe -v error -select_streams v:0 -show_entries stream_tags=DURATION -of default=nw=1:nk=1 "$SOURCE_PATH" | head -n1)
   [[ -n "$VIDEO_CODEC" ]] || fail "Video codec could not be resolved"
   if [[ "$VIDEO_CODEC" != h264 ]]; then
-    fail "Unsupported video source: codec=$VIDEO_CODEC. Phase 6 MVC decoding requires an original H.264 MVC MKV or Blu-ray 3D ISO."
+    fail "This file does not contain an MVC video stream. SyLC requires MVC input; SBS, over/under, and ordinary 2D files cannot be converted by this server."
   fi
   if [[ "$STEREO_MODE" != block_lr ]]; then
-    fail "Unsupported H.264 source: stereo_mode=${STEREO_MODE:-missing}. Phase 6 requires an original MakeMKV MVC track marked stereo_mode=block_lr."
+    fail "This file does not contain an MVC video stream. SyLC requires MVC input; SBS, over/under, and ordinary 2D files cannot be converted by this server."
   fi
   [[ "$AUDIO_CHANNELS" =~ ^[0-9]+$ ]] || fail "Audio stream a:${AUDIO_STREAM} is missing or unreadable"
   [[ -n "$AUDIO_CODEC" ]] || fail "Audio codec could not be resolved"

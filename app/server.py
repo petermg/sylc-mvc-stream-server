@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 APP_VERSION = "0.7.0-alpha.3"
 OUTPUT_MODES = ("half-sbs", "full-sbs", "half-ou", "full-ou", "left-eye", "right-eye", "anaglyph-color", "anaglyph-dubois", "passive-rows-left-top", "passive-rows-right-top")
+MVC_INPUT_ERROR = "This file does not contain an MVC video stream. SyLC requires MVC input; SBS, over/under, and ordinary 2D files cannot be converted by this server."
 TEXT_SUBTITLE_CODECS = {"subrip", "ass", "ssa", "webvtt", "mov_text", "text"}
 BITMAP_SUBTITLE_CODECS = {"hdmv_pgs_subtitle", "pgs"}
 SIDECAR_SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt", ".sup"}
@@ -798,10 +799,10 @@ class SessionManager:
                 fps = float(data["fps"])
                 width = int(data["width"])
                 height = int(data["height"])
-                if not data.get("hasMVC"):
-                    raise ValueError("selected feature has no MVC dependent view")
             except Exception as exc:
                 raise ApiError(400, "The selected ISO has incomplete Blu-ray feature metadata.", str(exc)) from exc
+            if not data.get("hasMVC"):
+                raise ApiError(400, MVC_INPUT_ERROR)
             if not math.isfinite(duration) or duration <= 0 or not math.isfinite(fps) or fps <= 0:
                 raise ApiError(400, "The selected ISO has invalid duration or frame-rate metadata.")
             disc_tracks = []
@@ -830,7 +831,7 @@ class SessionManager:
         command = [
             "ffprobe", "-v", "error",
             "-show_entries",
-            "format=duration:stream=index,codec_type,codec_name,avg_frame_rate,start_time,duration:stream_disposition=default,forced,hearing_impaired:stream_tags=language,title,DURATION",
+            "format=duration:stream=index,codec_type,codec_name,avg_frame_rate,start_time,duration:stream_disposition=default,forced,hearing_impaired:stream_tags=language,title,DURATION,stereo_mode",
             "-of", "json", str(source),
         ]
         try:
@@ -846,6 +847,8 @@ class SessionManager:
             data = json.loads(completed.stdout)
             streams = data.get("streams") or []
             stream = next(item for item in streams if item.get("codec_type") == "video")
+            codec_name = str(stream.get("codec_name") or "").strip().lower()
+            stereo_mode = str((stream.get("tags") or {}).get("stereo_mode") or "").strip().lower()
             format_duration = float(data["format"]["duration"])
             duration = stream.get("duration")
             if duration in (None, "N/A", ""):
@@ -864,6 +867,8 @@ class SessionManager:
                 fps = float(fps_raw)
         except Exception as exc:
             raise ApiError(400, "The selected file has no usable duration or frame rate.", str(exc)) from exc
+        if codec_name != "h264" or stereo_mode != "block_lr":
+            raise ApiError(400, MVC_INPUT_ERROR)
         if not math.isfinite(duration) or duration <= 0 or not math.isfinite(fps) or fps <= 0:
             raise ApiError(400, "The selected file has invalid duration or frame-rate metadata.")
 

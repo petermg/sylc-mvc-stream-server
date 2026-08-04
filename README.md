@@ -2,7 +2,7 @@
 
 **Current public alpha:** `0.7.0-alpha.3`
 
-SyLC MVC Stream Server converts user-supplied MVC 3D video into ordinary H.264 + AC-3 HLS that can be played by inexpensive Android TV and Fire TV devices, VLC, PotPlayer, and other compatible clients.
+SyLC MVC Stream Server converts MVC-encoded 3D video from MakeMKV MVC files and unencrypted Blu-ray 3D ISOs into SBS, over/under, anaglyph, passive-row, or single-eye HLS output. It is not a general-purpose converter for SBS, over/under, or anaglyph source files.
 
 It supports:
 

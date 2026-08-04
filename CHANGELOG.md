@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Clarified in the README and web interface that SyLC accepts MVC input only and is not a general SBS/OU/anaglyph converter.
+- Added pre-session validation for MakeMKV `stereo_mode=block_lr` and Blu-ray ISO MVC metadata.
+- Unsupported SBS, over/under, anaglyph, and ordinary 2D sources now fail cleanly before a conversion session is created.
+
 ## 0.7.0-alpha.3
 
 - Added 3D-aware server-side subtitle burn-in for embedded MKV/MK3D SRT, ASS, SSA, WebVTT, and PGS tracks.

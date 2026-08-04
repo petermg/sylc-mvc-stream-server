@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +100,59 @@ class ServiceTests(unittest.TestCase):
         info = self.manager.inspect_media(media_id)
         self.assertEqual(info["durationSeconds"], 7200.0)
         self.assertEqual(info["fps"], 24.0)
+
+    def test_mkv_probe_rejects_full_sbs_before_session_start(self):
+        probe_output = {
+            "format": {"duration": "120.0"},
+            "streams": [{
+                "index": 0, "codec_type": "video", "codec_name": "h264",
+                "avg_frame_rate": "24000/1001", "duration": "120.0",
+                "tags": {"stereo_mode": "left_right"},
+            }],
+        }
+        completed = server.subprocess.CompletedProcess(
+            args=["ffprobe"], returncode=0, stdout=server.json.dumps(probe_output), stderr=""
+        )
+        with mock.patch.object(server.subprocess, "run", return_value=completed):
+            with self.assertRaises(server.ApiError) as caught:
+                server.SessionManager._probe_source_uncached(self.manager, self.source)
+        self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(caught.exception.message, server.MVC_INPUT_ERROR)
+        self.assertEqual(list(self.config.state_root.iterdir()), [])
+
+    def test_mkv_probe_accepts_makemkv_block_lr(self):
+        probe_output = {
+            "format": {"duration": "120.0"},
+            "streams": [{
+                "index": 0, "codec_type": "video", "codec_name": "h264",
+                "avg_frame_rate": "24000/1001", "duration": "120.0",
+                "tags": {"stereo_mode": "block_lr"},
+            }],
+        }
+        completed = server.subprocess.CompletedProcess(
+            args=["ffprobe"], returncode=0, stdout=server.json.dumps(probe_output), stderr=""
+        )
+        with mock.patch.object(server.subprocess, "run", return_value=completed):
+            result = server.SessionManager._probe_source_uncached(self.manager, self.source)
+        self.assertEqual(result["sourceType"], "mvc-mkv")
+        self.assertAlmostEqual(result["duration"], 120.0)
+
+    def test_iso_probe_rejects_feature_without_mvc(self):
+        iso = self.media / "Ordinary 2D.iso"
+        iso.write_bytes(b"fake-udf-image")
+        probe_output = {
+            "durationSeconds": 120.0, "fps": 24000 / 1001,
+            "width": 1920, "height": 1080, "hasMVC": False,
+        }
+        completed = server.subprocess.CompletedProcess(
+            args=["sylc_iso_source"], returncode=0,
+            stdout=server.json.dumps(probe_output), stderr=""
+        )
+        with mock.patch.object(server.subprocess, "run", return_value=completed):
+            with self.assertRaises(server.ApiError) as caught:
+                server.SessionManager._probe_source_uncached(self.manager, iso)
+        self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(caught.exception.message, server.MVC_INPUT_ERROR)
 
     def test_seek_replaces_session_and_preserves_old_hls(self):
         media_id = self.catalog.scan(force=True)[0]["id"]

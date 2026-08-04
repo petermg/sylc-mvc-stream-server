@@ -280,7 +280,7 @@ function renderMedia() {
   const query = els.searchInput.value.trim().toLocaleLowerCase();
   const filtered = state.media.filter((item) => !query || item.relativePath.toLocaleLowerCase().includes(query));
   els.mediaList.replaceChildren();
-  els.mediaNotice.textContent = `${filtered.length} of ${state.media.length} compatible MVC MKV/MK3D or unencrypted Blu-ray 3D ISO sources shown. Select one to inspect it.`;
+  els.mediaNotice.textContent = `${filtered.length} of ${state.media.length} candidate MKV/MK3D or unencrypted Blu-ray 3D ISO files shown. Select one to verify MVC compatibility.`;
   filtered.forEach((item) => {
     const row = document.createElement('article');
     row.className = `media-row${state.selected?.id === item.id ? ' selected' : ''}`;

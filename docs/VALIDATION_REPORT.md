@@ -1,6 +1,6 @@
 # Validation report — 0.7.0-alpha.3
 
-Validated August 3, 2026 in the source-build environment and on the live Ubuntu Server 24.04 deployment.
+Validated August 4, 2026 in the source-build environment. The alpha.3 subtitle/media-path acceptance described below remains from the live Ubuntu Server 24.04 deployment.
 
 ## Automated and structural validation
 
@@ -13,6 +13,8 @@ Validated August 3, 2026 in the source-build environment and on the live Ubuntu 
 - Native MVC recovery and TrueHD framing tests: PASS
 - PGS M2TS/PES extraction and segment reconstruction tests: PASS
 - Clean-package extraction and checksum validation: PASS
+- MVC-input validation regression tests: PASS for MakeMKV `block_lr`; Full-SBS `left_right` and ISO features without MVC are rejected before session creation
+- Native CMake build without bundled `libudfread/config.h`: PASS
 
 ## Real media-path validation
 

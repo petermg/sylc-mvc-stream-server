@@ -10,7 +10,7 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$TMP/media" "$TMP/phase6/build" "$TMP/state" "$TMP/legacy"
-ffmpeg -v error -f lavfi -i color=size=16x16:rate=24 -t 2 -c:v ffv1 -y "$TMP/media/ShortMVC.mkv"
+ffmpeg -v error -f lavfi -i color=size=16x16:rate=24 -t 2 -c:v libx264 -metadata:s:v:0 stereo_mode=block_lr -y "$TMP/media/ShortMVC.mkv"
 cat > "$TMP/media/ShortMVC.eng.srt" <<'EOF'
 1
 00:00:00,000 --> 00:00:01,500
