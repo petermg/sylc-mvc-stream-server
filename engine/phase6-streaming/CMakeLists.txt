@@ -40,7 +40,16 @@ add_library(udfread STATIC
   "${UDF_ROOT}/src/udfread.c"
   "${UDF_ROOT}/src/udfread-version.c")
 target_include_directories(udfread PUBLIC "${UDF_GENERATED}" PRIVATE "${UDF_ROOT}" "${UDF_ROOT}/src")
-target_compile_definitions(udfread PRIVATE HAVE_CONFIG_H=1 UDFREAD_API_EXPORT _ISOC99_SOURCE _POSIX_C_SOURCE=200809L)
+target_compile_definitions(udfread PRIVATE
+  HAVE_CONFIG_H=0
+  UDFREAD_API_EXPORT
+  _ISOC99_SOURCE
+  _POSIX_C_SOURCE=200809L
+  HAVE_UNISTD_H=1
+  HAVE_FCNTL_H=1
+  HAVE_SYS_TYPES_H=1
+  HAVE_INTTYPES_H=1
+  HAVE_STDINT_H=1)
 target_compile_options(udfread PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 
 add_executable(sylc_iso_source
